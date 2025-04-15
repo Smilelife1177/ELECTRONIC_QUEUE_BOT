@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 from collections import deque
 import mysql.connector
 
-# моя гілка O/S
 # Завантажуємо змінні з .env файлу
 load_dotenv()
 TOKEN = os.getenv('TELEGRAM_TOKEN')
