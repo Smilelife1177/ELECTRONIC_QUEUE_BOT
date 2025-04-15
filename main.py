@@ -3,7 +3,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from dotenv import load_dotenv
 from collections import deque
-
+# моя гілка O/S
 # Завантажуємо змінні з .env файлу
 load_dotenv()
 TOKEN = os.getenv('TELEGRAM_TOKEN')
