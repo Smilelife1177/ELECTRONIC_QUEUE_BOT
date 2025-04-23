@@ -1,136 +1,136 @@
 import os
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-from dotenv import load_dotenv
-from collections import deque
+import asyncio
+import logging
 import mysql.connector
 
-# Завантажуємо змінні з .env файлу
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from dotenv import load_dotenv
+from brain import QueueManager
+
+# Завантаження змінних із .env
 load_dotenv()
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 
-# Налаштування підключення до бази даних
+# Конфіг підключення до MySQL
 db_config = {
     'user': 'bot_user',
-    'password': 'your_password',
+    'password': '7730130',  # 🔁 заміни на свій пароль, якщо потрібно
     'host': 'localhost',
     'database': 'telegram_queue'
 }
 
-# Функція для підключення до бази даних
-def get_db_connection():
-    return mysql.connector.connect(**db_config)
+# Налаштування логування
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обробник команди /start"""
+# Ініціалізуємо бота та диспетчер
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+queue_manager = QueueManager()
+
+# Додає користувача до таблиці MySQL
+def insert_user(user_id, user_name, position):
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO queue (user_id, user_name, position) VALUES (%s, %s, %s)",
+            (user_id, user_name, position)
+        )
+        conn.commit()
+        logger.info(f"✅ Користувач {user_name} (ID: {user_id}) доданий з позицією {position}")
+    except mysql.connector.Error as err:
+        logger.error(f"❌ Помилка вставки в БД: {err}")
+    finally:
+        if 'cursor' in locals(): cursor.close()
+        if 'conn' in locals(): conn.close()
+
+def get_main_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
-        [InlineKeyboardButton("Записатися в чергу", callback_data='join')],
-        [InlineKeyboardButton("Покинути чергу", callback_data='leave')],
-        [InlineKeyboardButton("Переглянути чергу", callback_data='view')],
-        [InlineKeyboardButton("Наступний!", callback_data='next')]
+        [InlineKeyboardButton(text="Записатися в чергу", callback_data='join')],
+        [InlineKeyboardButton(text="Покинути чергу", callback_data='leave')],
+        [InlineKeyboardButton(text="Переглянути чергу", callback_data='view')],
+        [InlineKeyboardButton(text="Наступний!", callback_data='next')]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        'Вітаю! Це бот електронної черги. Оберіть дію:', 
-        reply_markup=reply_markup
-    )
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обробник натискань на кнопки"""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    user_name = query.from_user.first_name or "Анонім"
+@dp.message(Command("start"))
+async def start_command(message: types.Message):
+    logger.info(f"/start від {message.from_user.id} ({message.from_user.username})")
+    await message.answer("Вітаю! Це бот електронної черги. Оберіть дію:", reply_markup=get_main_keyboard())
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
+@dp.message(Command("stats"))
+async def stats_command(message: types.Message):
+    stats = queue_manager.get_stats()
+    await message.answer(stats, reply_markup=get_main_keyboard())
+
+@dp.callback_query()
+async def button_handler(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    user_name = callback.from_user.first_name or "Анонім"
+    chat_id = callback.message.chat.id
+    logger.info(f"callback {callback.data} від {user_id} ({callback.from_user.username})")
 
     try:
-        if query.data == 'join':
-            # Перевіряємо, чи користувач уже в черзі
-            cursor.execute("SELECT user_id FROM queue WHERE user_id = %s", (user_id,))
-            if cursor.fetchone():
-                await query.edit_message_text('Ви вже в черзі!')
-            else:
-                # Отримуємо поточну кількість людей у черзі для визначення позиції
-                cursor.execute("SELECT MAX(position) FROM queue")
-                max_position = cursor.fetchone()[0]
-                new_position = (max_position or 0) + 1
+        if callback.data == 'join':
+            response = queue_manager.join_queue(user_id, user_name)
+            await queue_manager.save_queue()
+            insert_user(user_id, user_name, len(queue_manager.queue))
 
-                # Додаємо користувача до черги
-                cursor.execute(
-                    "INSERT INTO queue (user_id, user_name, position) VALUES (%s, %s, %s)",
-                    (user_id, user_name, new_position)
-                )
-                conn.commit()
-                await query.edit_message_text(
-                    f'{user_name}, ви додані до черги. Ваш номер: {new_position}'
-                )
+        elif callback.data == 'leave':
+            response = queue_manager.leave_queue(user_id)
+            await queue_manager.save_queue()
 
-        elif query.data == 'leave':
-            # Перевіряємо, чи користувач у черзі
-            cursor.execute("SELECT position FROM queue WHERE user_id = %s", (user_id,))
-            result = cursor.fetchone()
-            if result:
-                position = result[0]
-                # Видаляємо користувача
-                cursor.execute("DELETE FROM queue WHERE user_id = %s", (user_id,))
-                # Оновлюємо позиції всіх, хто був після нього
-                cursor.execute("UPDATE queue SET position = position - 1 WHERE position > %s", (position,))
-                conn.commit()
-                await query.edit_message_text('Ви покинули чергу.')
-            else:
-                await query.edit_message_text('Вас немає в черзі!')
+        elif callback.data == 'view':
+            response = queue_manager.view_queue()
 
-        elif query.data == 'view':
-            cursor.execute("SELECT position, user_name FROM queue ORDER BY position")
-            queue_list = cursor.fetchall()
-            if not queue_list:
-                await query.edit_message_text('Черга порожня.')
-            else:
-                queue_text = '\n'.join(f"{pos}. {name}" for pos, name in queue_list)
-                await query.edit_message_text(f'Поточна черга:\n{queue_text}')
+        elif callback.data == 'next':
+            response, updated_users = await queue_manager.next_in_queue()
+            await queue_manager.save_queue()
+            if queue_manager.queue:
+                asyncio.create_task(queue_manager.remind_first(bot, chat_id))
+            for uid in updated_users:
+                notify_msg = await queue_manager.notify_position(uid)
+                await bot.send_message(chat_id=chat_id, text=notify_msg)
 
-        elif query.data == 'next':
-            cursor.execute("SELECT user_id, user_name FROM queue WHERE position = 1")
-            result = cursor.fetchone()
-            if result:
-                next_user_id, next_name = result
-                # Видаляємо першого користувача
-                cursor.execute("DELETE FROM queue WHERE user_id = %s", (next_user_id,))
-                # Оновлюємо позиції всіх інших
-                cursor.execute("UPDATE queue SET position = position - 1 WHERE position > 1")
-                conn.commit()
-                await query.edit_message_text(f'Наступний: {next_name}')
-            else:
-                await query.edit_message_text('Черга порожня.')
+        await callback.message.edit_text(response, reply_markup=get_main_keyboard())
+        await callback.answer()
 
-        # Повертаємо кнопки після кожної дії
-        keyboard = [
-            [InlineKeyboardButton("Записатися в чергу", callback_data='join')],
-            [InlineKeyboardButton("Покинути чергу", callback_data='leave')],
-            [InlineKeyboardButton("Переглянути чергу", callback_data='view')],
-            [InlineKeyboardButton("Наступний!", callback_data='next')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.reply_text('Оберіть дію:', reply_markup=reply_markup)
+    except Exception as e:
+        logger.error(f"❌ Помилка callback {callback.data}: {e}")
+        await callback.message.edit_text("Виникла помилка. Спробуйте ще раз.")
+        await callback.answer()
 
-    finally:
-        cursor.close()
-        conn.close()
+async def check_token():
+    try:
+        bot_info = await bot.get_me()
+        logger.info(f"✅ Токен коректний: @{bot_info.username}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Токен не працює: {e}")
+        return False
 
-def main() -> None:
-    """Запуск бота"""
-    application = Application.builder().token(TOKEN).build()
+async def disable_webhook():
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Вебхуки вимкнено")
+    except Exception as e:
+        logger.error(f"Помилка відключення вебхуків: {e}")
 
-    # Додаємо обробники
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button))
-
-    # Запускаємо бота
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+async def main():
+    try:
+        logger.info("🔄 Запуск бота...")
+        if not await check_token():
+            raise ValueError("Невірний TELEGRAM_TOKEN у .env")
+        await disable_webhook()
+        await queue_manager.startup()
+        logger.info("✅ Бот запущено. Очікування повідомлень...")
+        await dp.start_polling(bot, skip_updates=True)
+    except Exception as e:
+        logger.error(f"❌ Критична помилка при запуску: {e}")
+        raise
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())
