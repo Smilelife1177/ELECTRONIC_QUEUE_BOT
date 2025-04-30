@@ -1,7 +1,6 @@
 import os
 import asyncio
 import logging
-import mysql.connector
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -27,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
-queue_manager = QueueManager()
+queue_manager = QueueManager(db_config)
 
 # Кнопка для надсилання номера
 def get_contact_keyboard() -> ReplyKeyboardMarkup:
@@ -44,64 +43,15 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# Перевірка номера
-def phone_exists(user_id):
-    try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-        cursor.execute("SELECT phone_number FROM users WHERE user_id = %s", (user_id,))
-        result = cursor.fetchone()
-        return result[0] if result else None
-    except mysql.connector.Error as err:
-        logger.error(f"❌ Перевірка номера телефону: {err}")
-        return None
-    finally:
-        if 'cursor' in locals(): cursor.close()
-        if 'conn' in locals(): conn.close()
-
-# Збереження номера
-def save_user_phone(user_id, user_name, phone_number):
-    try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-        cursor.execute(
-            "REPLACE INTO users (user_id, user_name, phone_number) VALUES (%s, %s, %s)",
-            (user_id, user_name, phone_number)
-        )
-        conn.commit()
-        logger.info(f"✅ Збережено номер: {phone_number} для {user_name}")
-    except mysql.connector.Error as err:
-        logger.error(f"❌ Збереження номера: {err}")
-    finally:
-        if 'cursor' in locals(): cursor.close()
-        if 'conn' in locals(): conn.close()
-
-# Вставка в чергу
-def insert_user(user_id, user_name, position, phone_number):
-    try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT IGNORE INTO queue (user_id, user_name, position, phone_number) VALUES (%s, %s, %s, %s)",
-            (user_id, user_name, position, phone_number)
-        )
-        conn.commit()
-        if cursor.rowcount:
-            logger.info(f"✅ Додано в чергу: {user_name} ({user_id})")
-    except mysql.connector.Error as err:
-        logger.error(f"❌ Вставка в чергу: {err}")
-    finally:
-        if 'cursor' in locals(): cursor.close()
-        if 'conn' in locals(): conn.close()
-
 # /start
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
     user_id = message.from_user.id
-    user_name = message.from_user.username
+    user_name = message.from_user.first_name or "Анонім"
     logger.info(f"/start від {user_id} ({user_name})")
 
-    if phone_exists(user_id):
+    phone_number = await queue_manager.phone_exists(user_id)
+    if phone_number:
         await message.answer("Вітаю знову! Оберіть дію:", reply_markup=get_main_keyboard())
     else:
         await message.answer("Вітаю! Щоб продовжити, поділіться своїм номером телефону:", reply_markup=get_contact_keyboard())
@@ -115,9 +65,7 @@ async def handle_contact(message: types.Message):
     user_name = message.from_user.first_name or "Анонім"
 
     logger.info(f"📞 Отримано номер: {phone_number} від {user_name} (ID: {user_id})")
-
-    # Зберігаємо номер телефону в окрему таблицю users
-    save_user_phone(user_id, user_name, phone_number)
+    await queue_manager.save_user_phone(user_id, user_name, phone_number)
 
     await message.answer(
         "✅ Дякую! Ваш номер збережено.\nОберіть дію нижче:",
@@ -141,10 +89,16 @@ async def button_handler(callback: types.CallbackQuery):
 
     try:
         if callback.data == 'join':
+            phone_number = await queue_manager.phone_exists(user_id)
+            if not phone_number:
+                await callback.message.edit_text(
+                    "Будь ласка, спочатку поділіться номером телефону за допомогою /start.",
+                    reply_markup=get_main_keyboard()
+                )
+                await callback.answer()
+                return
             response = queue_manager.join_queue(user_id, user_name)
             await queue_manager.save_queue()
-            phone_number = phone_exists(user_id)
-            insert_user(user_id, user_name, len(queue_manager.queue), phone_number)
 
         elif callback.data == 'leave':
             response = queue_manager.leave_queue(user_id)

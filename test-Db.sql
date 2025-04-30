@@ -1,1 +1,2 @@
-SELECT * FROM queue;
+USE telegram_queue;
+SHOW TABLES;
