@@ -15,7 +15,7 @@ TOKEN = os.getenv('TELEGRAM_TOKEN')
 # Конфіг підключення до MySQL
 db_config = {
     'user': 'bot_user',
-    'password': '7730130',
+    'password': os.getenv('MYSQL_PASSWORD', '7730130'),
     'host': 'localhost',
     'database': 'telegram_queue'
 }
@@ -142,6 +142,13 @@ async def disable_webhook():
     except Exception as e:
         logger.error(f"Вимкнення вебхуків: {e}")
 
+# Обробка завершення
+async def shutdown():
+    logger.info("Завершення роботи бота...")
+    await queue_manager.clear_queue()
+    await bot.session.close()
+    logger.info("Бот зупинений")
+
 # Основна функція
 async def main():
     try:
@@ -155,6 +162,8 @@ async def main():
     except Exception as e:
         logger.critical(f"❌ Критична помилка: {e}")
         raise
+    finally:
+        await shutdown()
 
 if __name__ == '__main__':
     asyncio.run(main())

@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 class QueueManager:
     def __init__(self, db_config):
         self.db_config = db_config
+        logger.info(f"Ініціалізація QueueManager з db_config: {db_config}")
         self.queue = deque()  # Локальна копія черги
         self.user_names = {}  # Кеш імен користувачів
         self.join_times = {}  # Кеш часу входу
@@ -23,8 +24,10 @@ class QueueManager:
     async def init_db(self):
         """Ініціалізація бази даних і таблиць"""
         try:
+            logger.info("Спроба підключення до MySQL")
             conn = mysql.connector.connect(**self.db_config)
             cursor = conn.cursor()
+            logger.info("Підключення до MySQL успішне")
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS queue (
                     user_id BIGINT PRIMARY KEY,
@@ -55,6 +58,23 @@ class QueueManager:
         except mysql.connector.Error as e:
             logger.error(f"Помилка ініціалізації бази даних: {e}")
             raise
+        finally:
+            if 'cursor' in locals(): cursor.close()
+            if 'conn' in locals(): conn.close()
+
+    async def clear_queue(self):
+        """Очищає таблицю queue, залишаючи user_history і users недоторканими"""
+        try:
+            conn = mysql.connector.connect(**self.db_config)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM queue")
+            conn.commit()
+            self.queue.clear()
+            self.user_names.clear()
+            self.join_times.clear()
+            logger.info("Таблиця queue очищена")
+        except mysql.connector.Error as e:
+            logger.error(f"Помилка очищення таблиці queue: {e}")
         finally:
             if 'cursor' in locals(): cursor.close()
             if 'conn' in locals(): conn.close()
