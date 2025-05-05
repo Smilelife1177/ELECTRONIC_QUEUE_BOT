@@ -53,16 +53,60 @@ def get_contact_keyboard() -> ReplyKeyboardMarkup:
     kb = [[KeyboardButton(text="Поділитися номером телефону", request_contact=True)]]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, one_time_keyboard=True)
 
-# Основне меню
-def get_main_keyboard() -> InlineKeyboardMarkup:
+# Основне меню з кнопками ReplyKeyboardMarkup
+def get_main_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
-        [InlineKeyboardButton(text="Записатися в чергу", callback_data='join')],
-        [InlineKeyboardButton(text="Покинути чергу", callback_data='leave')],
-        [InlineKeyboardButton(text="Переглянути чергу", callback_data='view')],
-        [InlineKeyboardButton(text="Наступний!", callback_data='next')]
+        [KeyboardButton(text="Записатися в чергу")],
+        [KeyboardButton(text="Покинути чергу")],
+        [KeyboardButton(text="Переглянути чергу")],
+        [KeyboardButton(text="Наступний!")]
     ]
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
+# Обробка текстових команд від кнопок
+@dp.message(lambda message: message.text in ["Записатися в чергу", "Покинути чергу", "Переглянути чергу", "Наступний!"])
+async def button_handler(message: types.Message):
+    user_id = message.from_user.id
+    user_name = message.from_user.first_name or "Анонім"
+    chat_id = message.chat.id
+    action = message.text
+
+    logger.info(f"🔘 Кнопка '{action}' від {user_id} ({user_name})")
+
+    try:
+        if action == "Записатися в чергу":
+            phone_number = await queue_manager.phone_exists(user_id)
+            if not phone_number:
+                await message.answer(
+                    "Будь ласка, спочатку поділіться номером телефону за допомогою /start.",
+                    reply_markup=get_contact_keyboard()
+                )
+                return
+            response = queue_manager.join_queue(user_id, user_name)
+            await queue_manager.save_queue()
+
+        elif action == "Покинути чергу":
+            response = queue_manager.leave_queue(user_id)
+            await queue_manager.save_queue()
+
+        elif action == "Переглянути чергу":
+            response = queue_manager.view_queue()
+
+        elif action == "Наступний!":
+            response, updated_users = await queue_manager.next_in_queue()
+            await queue_manager.save_queue()
+            if queue_manager.queue:
+                asyncio.create_task(queue_manager.remind_first(bot, chat_id))
+            for uid in updated_users:
+                notify_msg = await queue_manager.notify_position(uid)
+                await bot.send_message(chat_id=chat_id, text=notify_msg, reply_markup=get_main_keyboard())
+
+        await message.answer(response, reply_markup=get_main_keyboard())
+
+    except Exception as e:
+        logger.error(f"❌ Помилка обробки '{action}': {e}")
+        await message.answer("Сталася помилка. Спробуйте ще раз.", reply_markup=get_main_keyboard())
+        
 # /start
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
@@ -134,14 +178,14 @@ async def button_handler(callback: types.CallbackQuery):
                 asyncio.create_task(queue_manager.remind_first(bot, chat_id))
             for uid in updated_users:
                 notify_msg = await queue_manager.notify_position(uid)
-                await bot.send_message(chat_id=chat_id, text=notify_msg)
+                await bot.send_message(chat_id=chat_id, text=notify_msg, reply_markup=get_main_keyboard())
 
         await callback.message.edit_text(response, reply_markup=get_main_keyboard())
         await callback.answer()
 
     except Exception as e:
         logger.error(f"❌ callback {callback.data}: {e}")
-        await callback.message.edit_text("Сталася помилка. Спробуйте ще раз.")
+        await callback.message.edit_text("Сталася помилка. Спробуйте ще раз.", reply_markup=get_main_keyboard())
         await callback.answer()
 
 # Перевірка токену
