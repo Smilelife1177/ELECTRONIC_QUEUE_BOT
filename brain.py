@@ -72,7 +72,13 @@ class QueueManager:
             self.queue.clear()
             self.user_names.clear()
             self.join_times.clear()
-            logger.info("Таблиця queue очищена")
+            # Перевірка, чи таблиця порожня
+            cursor.execute("SELECT COUNT(*) FROM queue")
+            count = cursor.fetchone()[0]
+            if count == 0:
+                logger.info("Таблиця queue успішно очищена")
+            else:
+                logger.warning(f"Таблиця queue не очищена, залишилося {count} записів")
         except mysql.connector.Error as e:
             logger.error(f"Помилка очищення таблиці queue: {e}")
         finally:

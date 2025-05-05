@@ -1,6 +1,8 @@
 import os
 import asyncio
 import logging
+import atexit
+import mysql.connector
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -27,6 +29,24 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 queue_manager = QueueManager(db_config)
+
+# Синхронне очищення таблиці queue для atexit
+def sync_clear_queue():
+    logger.info("Синхронне очищення таблиці queue через atexit")
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM queue")
+        conn.commit()
+        logger.info("Таблиця queue успішно очищена (синхронно)")
+    except mysql.connector.Error as e:
+        logger.error(f"Помилка синхронного очищення таблиці queue: {e}")
+    finally:
+        if 'cursor' in locals(): cursor.close()
+        if 'conn' in locals(): conn.close()
+
+# Реєстрація синхронного очищення при завершенні програми
+atexit.register(sync_clear_queue)
 
 # Кнопка для надсилання номера
 def get_contact_keyboard() -> ReplyKeyboardMarkup:
@@ -145,9 +165,14 @@ async def disable_webhook():
 # Обробка завершення
 async def shutdown():
     logger.info("Завершення роботи бота...")
-    await queue_manager.clear_queue()
-    await bot.session.close()
-    logger.info("Бот зупинений")
+    try:
+        await queue_manager.clear_queue()
+        logger.info("Таблиця queue успішно очищена")
+    except Exception as e:
+        logger.error(f"Помилка при очищенні таблиці queue: {e}")
+    finally:
+        await bot.session.close()
+        logger.info("Бот зупинений")
 
 # Основна функція
 async def main():
@@ -159,11 +184,18 @@ async def main():
         await queue_manager.startup()
         logger.info("✅ Бот працює!")
         await dp.start_polling(bot, skip_updates=True)
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Отримано запит на завершення, очищення таблиці queue...")
+        await shutdown()
     except Exception as e:
         logger.critical(f"❌ Критична помилка: {e}")
+        await shutdown()
         raise
     finally:
         await shutdown()
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Програма завершена, таблиця queue очищена")
