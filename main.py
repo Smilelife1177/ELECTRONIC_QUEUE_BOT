@@ -187,11 +187,14 @@ async def university_selection(callback: types.CallbackQuery):
     user_context[user_id] = university_id
 
     try:
-        await callback.message.edit_text("Університет вибрано! Оберіть дію:", reply_markup=get_main_keyboard())
+        # Оновлюємо текст повідомлення без зміни inline-клавіатури
+        await callback.message.edit_text("Університет вибрано! Оберіть дію:")
+        # Надсилаємо нове повідомлення з основною клавіатурою
+        await callback.message.answer("Оберіть дію:", reply_markup=get_main_keyboard())
         await callback.answer()
     except Exception as e:
         logger.error(f"❌ Помилка вибору університету: {e}")
-        await callback.message.edit_text("Сталася помилка. Спробуйте ще раз.", reply_markup=get_main_keyboard())
+        await callback.message.answer("Сталася помилка. Спробуйте ще раз.", reply_markup=get_main_keyboard())
         await callback.answer()
 
 # Обробка застарілих кнопок (для сумісності)
@@ -207,8 +210,9 @@ async def button_handler(callback: types.CallbackQuery):
         if not university_id:
             await callback.message.edit_text(
                 "Спочатку виберіть університет за допомогою кнопки 'Вибрати університет'.",
-                reply_markup=get_main_keyboard()
+                reply_markup=None
             )
+            await callback.message.answer("Оберіть дію:", reply_markup=get_main_keyboard())
             await callback.answer()
             return
 
@@ -217,8 +221,9 @@ async def button_handler(callback: types.CallbackQuery):
             if not phone_number:
                 await callback.message.edit_text(
                     "Будь ласка, спочатку поділіться номером телефону за допомогою /start.",
-                    reply_markup=get_contact_keyboard()
+                    reply_markup=None
                 )
+                await callback.message.answer("Поділіться номером:", reply_markup=get_contact_keyboard())
                 await callback.answer()
                 return
             response = queue_manager.join_queue(user_id, user_name, university_id)
@@ -231,12 +236,13 @@ async def button_handler(callback: types.CallbackQuery):
         elif callback.data == 'view':
             response = queue_manager.view_queue(university_id)
 
-        await callback.message.edit_text(response, reply_markup=get_main_keyboard())
+        await callback.message.edit_text(response, reply_markup=None)
+        await callback.message.answer("Оберіть дію:", reply_markup=get_main_keyboard())
         await callback.answer()
 
     except Exception as e:
         logger.error(f"❌ callback {callback.data}: {e}")
-        await callback.message.edit_text("Сталася помилка. Спробуйте ще раз.", reply_markup=get_main_keyboard())
+        await callback.message.answer("Сталася помилка. Спробуйте ще раз.", reply_markup=get_main_keyboard())
         await callback.answer()
 
 # Перевірка токену
