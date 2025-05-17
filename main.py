@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 queue_manager = QueueManager(db_config)
+user_context = {}  # {user_id: university_id}
 
 # Синхронне очищення таблиці queue для atexit
 def sync_clear_queue():
@@ -56,24 +57,43 @@ def get_contact_keyboard() -> ReplyKeyboardMarkup:
 # Основне меню з кнопками ReplyKeyboardMarkup
 def get_main_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
+        [KeyboardButton(text="Вибрати університет")],
         [KeyboardButton(text="Записатися в чергу")],
         [KeyboardButton(text="Покинути чергу")],
         [KeyboardButton(text="Переглянути чергу")],
-        [KeyboardButton(text="Наступний!")]
+        [KeyboardButton(text="Моя позиція")]
     ]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
+# Клавіатура для вибору університету
+def get_universities_keyboard(universities) -> InlineKeyboardMarkup:
+    buttons = [[InlineKeyboardButton(text=name, callback_data=f"uni_{id}")] for id, name in universities]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 # Обробка текстових команд від кнопок
-@dp.message(lambda message: message.text in ["Записатися в чергу", "Покинути чергу", "Переглянути чергу", "Наступний!"])
+@dp.message(lambda message: message.text in ["Вибрати університет", "Записатися в чергу", "Покинути чергу", "Переглянути чергу", "Моя позиція"])
 async def button_handler(message: types.Message):
     user_id = message.from_user.id
     user_name = message.from_user.first_name or "Анонім"
-    chat_id = message.chat.id
     action = message.text
 
     logger.info(f"🔘 Кнопка '{action}' від {user_id} ({user_name})")
 
     try:
+        if action == "Вибрати університет":
+            universities = await queue_manager.get_universities()
+            if not universities:
+                await message.answer("Немає доступних університетів.")
+                return
+            await message.answer("Виберіть університет:", reply_markup=get_universities_keyboard(universities))
+            return
+
+        # Перевірка, чи вибрано університет
+        university_id = user_context.get(user_id)
+        if not university_id:
+            await message.answer("Спочатку виберіть університет за допомогою кнопки 'Вибрати університет'.", reply_markup=get_main_keyboard())
+            return
+
         if action == "Записатися в чергу":
             phone_number = await queue_manager.phone_exists(user_id)
             if not phone_number:
@@ -82,31 +102,25 @@ async def button_handler(message: types.Message):
                     reply_markup=get_contact_keyboard()
                 )
                 return
-            response = queue_manager.join_queue(user_id, user_name)
+            response = queue_manager.join_queue(user_id, user_name, university_id)
             await queue_manager.save_queue()
 
         elif action == "Покинути чергу":
-            response = queue_manager.leave_queue(user_id)
+            response = queue_manager.leave_queue(user_id, university_id)
             await queue_manager.save_queue()
 
         elif action == "Переглянути чергу":
-            response = queue_manager.view_queue()
+            response = queue_manager.view_queue(university_id)
 
-        elif action == "Наступний!":
-            response, updated_users = await queue_manager.next_in_queue()
-            await queue_manager.save_queue()
-            if queue_manager.queue:
-                asyncio.create_task(queue_manager.remind_first(bot, chat_id))
-            for uid in updated_users:
-                notify_msg = await queue_manager.notify_position(uid)
-                await bot.send_message(chat_id=chat_id, text=notify_msg, reply_markup=get_main_keyboard())
+        elif action == "Моя позиція":
+            response = await queue_manager.notify_position(user_id, university_id)
 
         await message.answer(response, reply_markup=get_main_keyboard())
 
     except Exception as e:
         logger.error(f"❌ Помилка обробки '{action}': {e}")
         await message.answer("Сталася помилка. Спробуйте ще раз.", reply_markup=get_main_keyboard())
-        
+
 # /start
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
@@ -139,53 +153,96 @@ async def handle_contact(message: types.Message):
 # /stats
 @dp.message(Command("stats"))
 async def stats_command(message: types.Message):
-    stats = queue_manager.get_stats()
+    user_id = message.from_user.id
+    university_id = user_context.get(user_id)
+    if not university_id:
+        await message.answer("Спочатку виберіть університет за допомогою кнопки 'Вибрати університет'.", reply_markup=get_main_keyboard())
+        return
+    stats = queue_manager.get_stats(university_id)
     await message.answer(stats, reply_markup=get_main_keyboard())
 
-# Обробка кнопок
+# /next (для виклику наступного в черзі)
+@dp.message(Command("next"))
+async def next_command(message: types.Message):
+    user_id = message.from_user.id
+    university_id = user_context.get(user_id)
+    if not university_id:
+        await message.answer("Спочатку виберіть університет за допомогою кнопки 'Вибрати університет'.", reply_markup=get_main_keyboard())
+        return
+    response, updated_users = await queue_manager.next_in_queue(university_id)
+    await queue_manager.save_queue()
+    await message.answer(response, reply_markup=get_main_keyboard())
+    # Нагадування першому в черзі
+    if updated_users:
+        asyncio.create_task(queue_manager.remind_first(bot, user_id, university_id))
+
+# Обробка вибору університету
+@dp.callback_query(lambda c: c.data.startswith("uni_"))
+async def university_selection(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    user_name = callback.from_user.first_name or "Анонім"
+    university_id = int(callback.data.split("_")[1])
+
+    logger.info(f"🔘 Вибір університету {university_id} від {user_id} ({user_name})")
+    user_context[user_id] = university_id
+
+    try:
+        # Оновлюємо текст повідомлення без зміни inline-клавіатури
+        await callback.message.edit_text("Університет вибрано! Оберіть дію:")
+        # Надсилаємо нове повідомлення з основною клавіатурою
+        await callback.message.answer("Оберіть дію:", reply_markup=get_main_keyboard())
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"❌ Помилка вибору університету: {e}")
+        await callback.message.answer("Сталася помилка. Спробуйте ще раз.", reply_markup=get_main_keyboard())
+        await callback.answer()
+
+# Обробка застарілих кнопок (для сумісності)
 @dp.callback_query()
 async def button_handler(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     user_name = callback.from_user.first_name or "Анонім"
-    chat_id = callback.message.chat.id
+    university_id = user_context.get(user_id)
 
     logger.info(f"🔘 callback {callback.data} від {user_id} ({user_name})")
 
     try:
+        if not university_id:
+            await callback.message.edit_text(
+                "Спочатку виберіть університет за допомогою кнопки 'Вибрати університет'.",
+                reply_markup=None
+            )
+            await callback.message.answer("Оберіть дію:", reply_markup=get_main_keyboard())
+            await callback.answer()
+            return
+
         if callback.data == 'join':
             phone_number = await queue_manager.phone_exists(user_id)
             if not phone_number:
                 await callback.message.edit_text(
                     "Будь ласка, спочатку поділіться номером телефону за допомогою /start.",
-                    reply_markup=get_main_keyboard()
+                    reply_markup=None
                 )
+                await callback.message.answer("Поділіться номером:", reply_markup=get_contact_keyboard())
                 await callback.answer()
                 return
-            response = queue_manager.join_queue(user_id, user_name)
+            response = queue_manager.join_queue(user_id, user_name, university_id)
             await queue_manager.save_queue()
 
         elif callback.data == 'leave':
-            response = queue_manager.leave_queue(user_id)
+            response = queue_manager.leave_queue(user_id, university_id)
             await queue_manager.save_queue()
 
         elif callback.data == 'view':
-            response = queue_manager.view_queue()
+            response = queue_manager.view_queue(university_id)
 
-        elif callback.data == 'next':
-            response, updated_users = await queue_manager.next_in_queue()
-            await queue_manager.save_queue()
-            if queue_manager.queue:
-                asyncio.create_task(queue_manager.remind_first(bot, chat_id))
-            for uid in updated_users:
-                notify_msg = await queue_manager.notify_position(uid)
-                await bot.send_message(chat_id=chat_id, text=notify_msg, reply_markup=get_main_keyboard())
-
-        await callback.message.edit_text(response, reply_markup=get_main_keyboard())
+        await callback.message.edit_text(response, reply_markup=None)
+        await callback.message.answer("Оберіть дію:", reply_markup=get_main_keyboard())
         await callback.answer()
 
     except Exception as e:
         logger.error(f"❌ callback {callback.data}: {e}")
-        await callback.message.edit_text("Сталася помилка. Спробуйте ще раз.", reply_markup=get_main_keyboard())
+        await callback.message.answer("Сталася помилка. Спробуйте ще раз.", reply_markup=get_main_keyboard())
         await callback.answer()
 
 # Перевірка токену
