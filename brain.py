@@ -61,12 +61,34 @@ class QueueManager:
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS admins (
+                    user_id BIGINT PRIMARY KEY,
+                    user_name VARCHAR(255),
+                    added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             conn.commit()
             logger.info("База даних ініціалізована")
             await self.load_queue()
         except mysql.connector.Error as e:
             logger.error(f"Помилка ініціалізації бази даних: {e}")
             raise
+        finally:
+            if 'cursor' in locals(): cursor.close()
+            if 'conn' in locals(): conn.close()
+
+    async def is_admin(self, user_id: int) -> bool:
+        """Перевіряє, чи є користувач адміністратором"""
+        try:
+            conn = mysql.connector.connect(**self.db_config)
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id FROM admins WHERE user_id = %s", (user_id,))
+            result = cursor.fetchone()
+            return result is not None
+        except mysql.connector.Error as e:
+            logger.error(f"Помилка перевірки статусу адміністратора: {e}")
+            return False
         finally:
             if 'cursor' in locals(): cursor.close()
             if 'conn' in locals(): conn.close()
@@ -79,8 +101,8 @@ class QueueManager:
             cursor.execute("DELETE FROM queue")
             conn.commit()
             self.queues.clear()
-            self.user_names.clear()
-            self.join_times.clear()
+            self.user_names = {}
+            self.join_times = {}
             cursor.execute("SELECT COUNT(*) FROM queue")
             count = cursor.fetchone()[0]
             if count == 0:
@@ -112,8 +134,8 @@ class QueueManager:
     async def load_queue(self):
         """Завантаження черг з бази даних для всіх університетів"""
         self.queues.clear()
-        self.user_names.clear()
-        self.join_times.clear()
+        self.user_names = {}
+        self.join_times = {}
         try:
             conn = mysql.connector.connect(**self.db_config)
             cursor = conn.cursor()
@@ -198,6 +220,29 @@ class QueueManager:
             logger.info(f"Дія записана: {action} для {user_name} (ID: {user_id})")
         except mysql.connector.Error as e:
             logger.error(f"Помилка запису історії: {e}")
+        finally:
+            if 'cursor' in locals(): cursor.close()
+            if 'conn' in locals(): conn.close()
+
+    async def get_user_history(self, user_id: int) -> str:
+        """Повертає історію дій користувача (доступно лише для адмінів)"""
+        try:
+            conn = mysql.connector.connect(**self.db_config)
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT user_name, action, timestamp FROM user_history WHERE user_id = %s ORDER BY timestamp DESC",
+                (user_id,)
+            )
+            history = cursor.fetchall()
+            if not history:
+                return "Історія дій порожня."
+            result = ["📜 Історія дій:"]
+            for user_name, action, timestamp in history:
+                result.append(f"[{timestamp}] {user_name}: {action}")
+            return "\n".join(result)
+        except mysql.connector.Error as e:
+            logger.error(f"Помилка отримання історії користувача: {e}")
+            return "Помилка при отриманні історії."
         finally:
             if 'cursor' in locals(): cursor.close()
             if 'conn' in locals(): conn.close()

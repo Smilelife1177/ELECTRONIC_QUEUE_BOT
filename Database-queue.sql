@@ -48,6 +48,13 @@ CREATE TABLE IF NOT EXISTS user_history (
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Create the admins table
+CREATE TABLE IF NOT EXISTS admins (
+    user_id BIGINT PRIMARY KEY,
+    user_name VARCHAR(255),
+    added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Insert distinct Ukrainian universities
 INSERT INTO universities (name) VALUES
     ('Київський національний університет імені Тараса Шевченка'),
@@ -60,3 +67,7 @@ INSERT INTO universities (name) VALUES
     ('Національний авіаційний університет'),
     ('Київський національний економічний університет імені Вадима Гетьмана'),
     ('Чернівецький національний університет імені Юрія Федьковича');
+
+-- Insert a sample admin (replace with actual admin user_id and user_name)
+INSERT INTO admins (user_id, user_name) VALUES
+    (967484016, 'Олег');
