@@ -11,7 +11,6 @@ from dotenv import load_dotenv
 from brain import QueueManager
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-
 # Завантаження змінних із .env
 load_dotenv()
 TOKEN = os.getenv('TELEGRAM_TOKEN')
@@ -55,6 +54,7 @@ atexit.register(sync_clear_queue)
 def get_contact_keyboard() -> ReplyKeyboardMarkup:
     kb = [[KeyboardButton(text="Поділитися номером телефону", request_contact=True)]]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, one_time_keyboard=True)
+
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
     """Обробник команди /start"""
@@ -78,10 +78,18 @@ async def start_command(message: types.Message):
 async def handle_start_button(message: types.Message):
     """Обробник натискання кнопки 'Почати'"""
     logger.info(f"Користувач {message.from_user.id} ({message.from_user.username}) натиснув 'Почати'")
-    await message.answer(
-        "Оберіть дію:",
-        reply_markup=get_main_keyboard()
-    )
+    phone_number = await queue_manager.phone_exists(message.from_user.id)
+    if not phone_number:
+        await message.answer(
+            "Будь ласка, поділіться своїм номером телефону, щоб продовжити:",
+            reply_markup=get_contact_keyboard()
+        )
+    else:
+        await message.answer(
+            "Оберіть дію:",
+            reply_markup=get_main_keyboard()
+        )
+
 # Основне меню з кнопками ReplyKeyboardMarkup
 def get_main_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
@@ -148,19 +156,6 @@ async def button_handler(message: types.Message):
     except Exception as e:
         logger.error(f"❌ Помилка обробки '{action}': {e}")
         await message.answer("Сталася помилка. Спробуйте ще раз.", reply_markup=get_main_keyboard())
-
-# /start
-@dp.message(Command("start"))
-async def start_command(message: types.Message):
-    user_id = message.from_user.id
-    user_name = message.from_user.first_name or "Анонім"
-    logger.info(f"/start від {user_id} ({user_name})")
-
-    phone_number = await queue_manager.phone_exists(user_id)
-    if phone_number:
-        await message.answer("Вітаю знову! Оберіть дію:", reply_markup=get_main_keyboard())
-    else:
-        await message.answer("Вітаю! Щоб продовжити, поділіться своїм номером телефону:", reply_markup=get_contact_keyboard())
 
 # Обробка контакту
 @dp.message(lambda message: message.contact is not None)
@@ -269,7 +264,7 @@ async def button_handler(callback: types.CallbackQuery):
         await callback.answer()
 
     except Exception as e:
-        logger.error(f"❌ callback {callback.data}: {e}")
+        logger.error(f"❌ callback finais {callback.data}: {e}")
         await callback.message.answer("Сталася помилка. Спробуйте ще раз.", reply_markup=get_main_keyboard())
         await callback.answer()
 
