@@ -9,6 +9,8 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from dotenv import load_dotenv
 from brain import QueueManager
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+
 
 # Завантаження змінних із .env
 load_dotenv()
@@ -53,7 +55,33 @@ atexit.register(sync_clear_queue)
 def get_contact_keyboard() -> ReplyKeyboardMarkup:
     kb = [[KeyboardButton(text="Поділитися номером телефону", request_contact=True)]]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, one_time_keyboard=True)
+@dp.message(Command("start"))
+async def start_command(message: types.Message):
+    """Обробник команди /start"""
+    logger.info(f"Отримано команду /start від користувача {message.from_user.id} ({message.from_user.username})")
+    
+    # Створюємо звичайну клавіатуру з кнопкою "Почати"
+    start_keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Почати")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+    
+    await message.answer(
+        "Вітаю! Це бот електронної черги. Натисніть 'Почати', щоб обрати дію:",
+        reply_markup=start_keyboard
+    )
 
+@dp.message(lambda message: message.text == "Почати")
+async def handle_start_button(message: types.Message):
+    """Обробник натискання кнопки 'Почати'"""
+    logger.info(f"Користувач {message.from_user.id} ({message.from_user.username}) натиснув 'Почати'")
+    await message.answer(
+        "Оберіть дію:",
+        reply_markup=get_main_keyboard()
+    )
 # Основне меню з кнопками ReplyKeyboardMarkup
 def get_main_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
