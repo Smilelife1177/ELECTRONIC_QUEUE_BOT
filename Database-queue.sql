@@ -71,3 +71,4 @@ INSERT INTO universities (name) VALUES
 -- Insert a sample admin (replace with actual admin user_id and user_name)
 INSERT INTO admins (user_id, user_name) VALUES
     (967484016, 'Олег');
+    (1885828317,'Максим');
