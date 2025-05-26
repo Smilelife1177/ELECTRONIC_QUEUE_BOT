@@ -39,14 +39,15 @@ def get_contact_keyboard() -> ReplyKeyboardMarkup:
 async def get_main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
     is_admin = await queue_manager.is_admin(user_id)
     keyboard = [
-        [KeyboardButton(text="Вибрати університет")],
-        [KeyboardButton(text="Записатися в чергу")],
-        [KeyboardButton(text="Покинути чергу")],
-        [KeyboardButton(text="Переглянути чергу")],
-        [KeyboardButton(text="Моя позиція")]
+        [KeyboardButton(text="🎓Вибрати університет🎓")],
+        [KeyboardButton(text="➕Записатися в чергу➕")],
+        [KeyboardButton(text="➖Покинути чергу➖")],
+        [KeyboardButton(text="🔍Переглянути чергу🔍")],
+        [KeyboardButton(text="🪪Моя позиція🪪")]
     ]
     if is_admin:
-        keyboard.append([KeyboardButton(text="Переглянути історію")])
+        keyboard.append([KeyboardButton(text="📜Переглянути історію📜")])
+        keyboard.append([KeyboardButton(text="❌Видалити першого❌")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 # Клавіатура для вибору університету
@@ -62,7 +63,7 @@ async def start_command(message: types.Message):
     # Створюємо звичайну клавіатуру з кнопкою "Почати"
     start_keyboard = ReplyKeyboardMarkup(
         keyboard=[[
-            KeyboardButton(text="Почати")
+            KeyboardButton(text="➡️Почати⬅️")
         ]],
         resize_keyboard=True,
         one_time_keyboard=True
@@ -92,7 +93,7 @@ async def handle_start_button(message: types.Message):
 # Обробка текстових команд від кнопок
 @dp.message(lambda message: message.text in [
     "Вибрати університет", "Записатися в чергу", "Покинути чергу", 
-    "Переглянути чергу", "Моя позиція", "Переглянути історію"
+    "Переглянути чергу", "Моя позиція", "Переглянути історію", "Видалити першого"
 ])
 async def button_handler(message: types.Message):
     user_id = message.from_user.id
@@ -105,7 +106,7 @@ async def button_handler(message: types.Message):
         # Перевірка, чи є користувач адміністратором
         is_admin = await queue_manager.is_admin(user_id)
 
-        if action == "Переглянути історію" and not is_admin:
+        if action in ["Переглянути історію", "Видалити першого"] and not is_admin:
             await message.answer("Ця дія доступна лише для адміністраторів.", reply_markup=await get_main_keyboard(user_id))
             return
 
@@ -119,7 +120,7 @@ async def button_handler(message: types.Message):
 
         # Перевірка, чи вибрано університет (окрім адмінських дій)
         university_id = user_context.get(user_id)
-        if not university_id and action != "Переглянути історію":
+        if not university_id and action not in ["Переглянути історію"]:
             await message.answer("Спочатку виберіть університет за допомогою кнопки 'Вибрати університет'.", reply_markup=await get_main_keyboard(user_id))
             return
 
@@ -146,6 +147,12 @@ async def button_handler(message: types.Message):
 
         elif action == "Переглянути історію":
             response = await queue_manager.get_user_history(user_id)
+
+        elif action == "Видалити першого":
+            response, updated_users = await queue_manager.next_in_queue(university_id)
+            await queue_manager.save_queue()
+            if updated_users:
+                asyncio.create_task(queue_manager.remind_first(bot, user_id, university_id))
 
         await message.answer(response, reply_markup=await get_main_keyboard(user_id))
 
@@ -184,6 +191,24 @@ async def stats_command(message: types.Message):
 @dp.message(Command("next"))
 async def next_command(message: types.Message):
     user_id = message.from_user.id
+    university_id = user_context.get(user_id)
+    if not university_id:
+        await message.answer("Спочатку виберіть університет за допомогою кнопки 'Вибрати університет'.", reply_markup=await get_main_keyboard(user_id))
+        return
+    response, updated_users = await queue_manager.next_in_queue(university_id)
+    await queue_manager.save_queue()
+    await message.answer(response, reply_markup=await get_main_keyboard(user_id))
+    # Нагадування першому в черзі
+    if updated_users:
+        asyncio.create_task(queue_manager.remind_first(bot, user_id, university_id))
+
+# /remove_first
+@dp.message(Command("remove_first"))
+async def remove_first_command(message: types.Message):
+    user_id = message.from_user.id
+    if not await queue_manager.is_admin(user_id):
+        await message.answer("Ця команда доступна лише для адміністраторів.", reply_markup=await get_main_keyboard(user_id))
+        return
     university_id = user_context.get(user_id)
     if not university_id:
         await message.answer("Спочатку виберіть університет за допомогою кнопки 'Вибрати університет'.", reply_markup=await get_main_keyboard(user_id))
@@ -270,7 +295,7 @@ async def button_handler(callback: types.CallbackQuery):
         await callback.answer()
 
     except Exception as e:
-        logger.error(f"❌ callback finais {callback.data}: {e}")
+        logger.error(f"❌ callback failure {callback.data}: {e}")
         await callback.message.answer("Сталася помилка. Спробуйте ще раз.", reply_markup=await get_main_keyboard(user_id))
         await callback.answer()
 
