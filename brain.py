@@ -93,28 +93,6 @@ class QueueManager:
             if 'cursor' in locals(): cursor.close()
             if 'conn' in locals(): conn.close()
 
-    async def clear_queue(self):
-        """Очищає таблицю queue, залишаючи user_history і users недоторканими"""
-        try:
-            conn = mysql.connector.connect(**self.db_config)
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM queue")
-            conn.commit()
-            self.queues.clear()
-            self.user_names = {}
-            self.join_times = {}
-            cursor.execute("SELECT COUNT(*) FROM queue")
-            count = cursor.fetchone()[0]
-            if count == 0:
-                logger.info("Таблиця queue успішно очищена")
-            else:
-                logger.warning(f"Таблиця queue не очищена, залишилося {count} записів")
-        except mysql.connector.Error as e:
-            logger.error(f"Помилка очищення таблиці queue: {e}")
-        finally:
-            if 'cursor' in locals(): cursor.close()
-            if 'conn' in locals(): conn.close()
-
     async def get_universities(self):
         """Отримує список університетів"""
         try:

@@ -1,7 +1,6 @@
 import os
 import asyncio
 import logging
-import atexit
 import mysql.connector
 
 from aiogram import Bot, Dispatcher, types
@@ -14,7 +13,7 @@ from brain import QueueManager
 load_dotenv()
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 
-# Кон WYігурація підключення до MySQL
+# Конфігурація підключення до MySQL
 db_config = {
     'user': 'bot_user',
     'password': os.getenv('MYSQL_PASSWORD', '7730130'),
@@ -30,24 +29,6 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 queue_manager = QueueManager(db_config)
 user_context = {}  # {user_id: university_id}
-
-# Синхронне очищення таблиці queue для atexit
-def sync_clear_queue():
-    logger.info("Синхронне очищення таблиці queue через atexit")
-    try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM queue")
-        conn.commit()
-        logger.info("Таблиця queue успішно очищена (синхронно)")
-    except mysql.connector.Error as e:
-        logger.error(f"Помилка синхронного очищення таблиці queue: {e}")
-    finally:
-        if 'cursor' in locals(): cursor.close()
-        if 'conn' in locals(): conn.close()
-
-# Реєстрація синхронного очищення при завершенні програми
-atexit.register(sync_clear_queue)
 
 # Кнопка для надсилання номера
 def get_contact_keyboard() -> ReplyKeyboardMarkup:
@@ -65,7 +46,6 @@ async def get_main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
         [KeyboardButton(text="Моя позиція")]
     ]
     if is_admin:
-        keyboard.append([KeyboardButton(text="Очистити чергу")])
         keyboard.append([KeyboardButton(text="Переглянути історію")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
@@ -89,7 +69,7 @@ async def start_command(message: types.Message):
     )
     
     await message.answer(
-        "Вітаю! Це бот електронної черги. Натисніть 'Почати', Paramount щоб обрати дію:",
+        "Вітаю! Це бот електронної черги. Натисніть 'Почати', щоб обрати дію:",
         reply_markup=start_keyboard
     )
 
@@ -112,7 +92,7 @@ async def handle_start_button(message: types.Message):
 # Обробка текстових команд від кнопок
 @dp.message(lambda message: message.text in [
     "Вибрати університет", "Записатися в чергу", "Покинути чергу", 
-    "Переглянути чергу", "Моя позиція", "Очистити чергу", "Переглянути історію"
+    "Переглянути чергу", "Моя позиція", "Переглянути історію"
 ])
 async def button_handler(message: types.Message):
     user_id = message.from_user.id
@@ -125,7 +105,7 @@ async def button_handler(message: types.Message):
         # Перевірка, чи є користувач адміністратором
         is_admin = await queue_manager.is_admin(user_id)
 
-        if action in ["Очистити чергу", "Переглянути історію"] and not is_admin:
+        if action == "Переглянути історію" and not is_admin:
             await message.answer("Ця дія доступна лише для адміністраторів.", reply_markup=await get_main_keyboard(user_id))
             return
 
@@ -139,7 +119,7 @@ async def button_handler(message: types.Message):
 
         # Перевірка, чи вибрано університет (окрім адмінських дій)
         university_id = user_context.get(user_id)
-        if not university_id and action not in ["Очистити чергу", "Переглянути історію"]:
+        if not university_id and action != "Переглянути історію":
             await message.answer("Спочатку виберіть університет за допомогою кнопки 'Вибрати університет'.", reply_markup=await get_main_keyboard(user_id))
             return
 
@@ -163,10 +143,6 @@ async def button_handler(message: types.Message):
 
         elif action == "Моя позиція":
             response = await queue_manager.notify_position(user_id, university_id)
-
-        elif action == "Очистити чергу":
-            await queue_manager.clear_queue()
-            response = "Чергу очищено."
 
         elif action == "Переглянути історію":
             response = await queue_manager.get_user_history(user_id)
@@ -204,7 +180,7 @@ async def stats_command(message: types.Message):
     stats = queue_manager.get_stats(university_id)
     await message.answer(stats, reply_markup=await get_main_keyboard(user_id))
 
-# /next (для виклику наступного в черзі)
+# /next
 @dp.message(Command("next"))
 async def next_command(message: types.Message):
     user_id = message.from_user.id
@@ -228,16 +204,6 @@ async def admin_history_command(message: types.Message):
         return
     history = await queue_manager.get_user_history(user_id)
     await message.answer(history, reply_markup=await get_main_keyboard(user_id))
-
-# /clear_queue
-@dp.message(Command("clear_queue"))
-async def clear_queue_command(message: types.Message):
-    user_id = message.from_user.id
-    if not await queue_manager.is_admin(user_id):
-        await message.answer("Ця команда доступна лише для адміністраторів.", reply_markup=await get_main_keyboard(user_id))
-        return
-    await queue_manager.clear_queue()
-    await message.answer("Чергу очищено.", reply_markup=await get_main_keyboard(user_id))
 
 # Обробка вибору університету
 @dp.callback_query(lambda c: c.data.startswith("uni_"))
@@ -330,15 +296,12 @@ async def disable_webhook():
 async def shutdown():
     logger.info("Завершення роботи бота...")
     try:
-        await queue_manager.clear_queue()
-        logger.info("Таблиця queue успішно очищена")
-    except Exception as e:
-        logger.error(f"Помилка при очищенні таблиці queue: {e}")
-    finally:
         await bot.session.close()
         logger.info("Бот зупинений")
+    except Exception as e:
+        logger.error(f"Помилка при завершенні роботи бота: {e}")
 
-# Основ honeymoon функція
+# Основна функція
 async def main():
     try:
         logger.info("🔄 Запуск бота...")
@@ -349,7 +312,7 @@ async def main():
         logger.info("✅ Бот працює!")
         await dp.start_polling(bot, skip_updates=True)
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Отримано запит на завершення, очищення таблиці queue...")
+        logger.info("Отримано запит на завершення")
         await shutdown()
     except Exception as e:
         logger.critical(f"❌ Критична помилка: {e}")
@@ -362,4 +325,4 @@ if __name__ == '__main__':
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Програма завершена, таблиця queue очищена")
+        logger.info("Програма завершена")
