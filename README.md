@@ -1,5 +1,7 @@
 # Telegram Queue Bot
 
+![Alt text](images/queue.jpg)
+
 This project is a Telegram bot written in Python that implements an electronic queue system. Users can join, leave, view, and manage a queue directly in Telegram chats, making it perfect for event registrations, customer service, or any queue-based workflow.
 
 ## Features
