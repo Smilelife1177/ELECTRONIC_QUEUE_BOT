@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import mysql.connector
+import re
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -30,23 +31,42 @@ dp = Dispatcher()
 queue_manager = QueueManager(db_config)
 user_context = {}  # {user_id: university_id}
 
+# Словник для зіставлення відображуваних кнопок із діями
+BUTTON_MAPPING = {
+    "➡️ Почати ⬅️": "Почати",
+    "🎓 Вибрати університет 🎓": "Вибрати університет",
+    "➕ Записатися в чергу ➕": "Записатися в чергу",
+    "➖ Покинути чергу ➖": "Покинути чергу",
+    "🔍 Переглянути чергу 🔍": "Переглянути чергу",
+    "🪪 Моя позиція 🪪": "Моя позиція",
+    "📜 Переглянути історію 📜": "Переглянути історію",
+    "⏭️ Видалити першого ⏭️": "Видалити першого"
+}
+
+# Функція для очищення тексту від емодзі та пробілів
+def clean_button_text(text: str) -> str:
+    # Видаляємо емодзі за допомогою regex та зайві пробіли
+    text = re.sub(r'[^\w\s]', '', text).strip()
+    return text
+
 # Кнопка для надсилання номера
 def get_contact_keyboard() -> ReplyKeyboardMarkup:
-    kb = [[KeyboardButton(text="Поділитися номером телефону", request_contact=True)]]
+    kb = [[KeyboardButton(text="Поділитися номером телефону 📱", request_contact=True)]]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, one_time_keyboard=True)
 
 # Основне меню з кнопками ReplyKeyboardMarkup
 async def get_main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
     is_admin = await queue_manager.is_admin(user_id)
     keyboard = [
-        [KeyboardButton(text="Вибрати університет")],
-        [KeyboardButton(text="Записатися в чергу")],
-        [KeyboardButton(text="Покинути чергу")],
-        [KeyboardButton(text="Переглянути чергу")],
-        [KeyboardButton(text="Моя позиція")]
+        [KeyboardButton(text="🎓 Вибрати університет 🎓")],
+        [KeyboardButton(text="➕ Записатися в чергу ➕")],
+        [KeyboardButton(text="➖ Покинути чергу ➖")],
+        [KeyboardButton(text="🔍 Переглянути чергу 🔍")],
+        [KeyboardButton(text="🪪 Моя позиція 🪪")]
     ]
     if is_admin:
-        keyboard.append([KeyboardButton(text="Переглянути історію")])
+        keyboard.append([KeyboardButton(text="📜 Переглянути історію 📜")])
+        keyboard.append([KeyboardButton(text="⏭️ Видалити першого ⏭️")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 # Клавіатура для вибору університету
@@ -57,12 +77,14 @@ def get_universities_keyboard(universities) -> InlineKeyboardMarkup:
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
     """Обробник команди /start"""
-    logger.info(f"Отримано команду /start від користувача {message.from_user.id} ({message.from_user.username})")
+    user_id = message.from_user.id
+    if user_id in user_context:
+        del user_context[user_id]  # Очищаємо контекст для нового акаунта
+    logger.info(f"Отримано команду /start від користувача {user_id} ({message.from_user.username})")
     
-    # Створюємо звичайну клавіатуру з кнопкою "Почати"
     start_keyboard = ReplyKeyboardMarkup(
         keyboard=[[
-            KeyboardButton(text="Почати")
+            KeyboardButton(text="➡️ Почати ⬅️")
         ]],
         resize_keyboard=True,
         one_time_keyboard=True
@@ -73,39 +95,43 @@ async def start_command(message: types.Message):
         reply_markup=start_keyboard
     )
 
-@dp.message(lambda message: message.text == "Почати")
+@dp.message(lambda message: message.text == "➡️ Почати ⬅️")
 async def handle_start_button(message: types.Message):
     """Обробник натискання кнопки 'Почати'"""
-    logger.info(f"Користувач {message.from_user.id} ({message.from_user.username}) натиснув 'Почати'")
-    phone_number = await queue_manager.phone_exists(message.from_user.id)
-    if not phone_number:
-        await message.answer(
-            "Будь ласка, поділіться своїм номером телефону, щоб продовжити:",
-            reply_markup=get_contact_keyboard()
-        )
-    else:
-        await message.answer(
-            "Оберіть дію:",
-            reply_markup=await get_main_keyboard(message.from_user.id)
-        )
+    user_id = message.from_user.id
+    logger.info(f"Користувач {user_id} ({message.from_user.username}) натиснув 'Почати' (отриманий текст: '{message.text}')")
+    try:
+        phone_number = await queue_manager.phone_exists(user_id)
+        logger.info(f"Перевірка номера телефону для user_id {user_id}: {'Знайдено: ' + phone_number if phone_number else 'Не знайдено'}")
+        if not phone_number:
+            await message.answer(
+                "Будь ласка, поділіться своїм номером телефону, щоб продовжити:",
+                reply_markup=get_contact_keyboard()
+            )
+        else:
+            await message.answer(
+                "Оберіть дію:",
+                reply_markup=await get_main_keyboard(user_id)
+            )
+    except Exception as e:
+        logger.error(f"Помилка в handle_start_button для user_id {user_id}: {e}")
+        await message.answer("Сталася помилка при перевірці номера телефону. Спробуйте ще раз.", reply_markup=get_contact_keyboard())
 
 # Обробка текстових команд від кнопок
-@dp.message(lambda message: message.text in [
-    "Вибрати університет", "Записатися в чергу", "Покинути чергу", 
-    "Переглянути чергу", "Моя позиція", "Переглянути історію"
-])
+@dp.message(lambda message: message.text in BUTTON_MAPPING)
 async def button_handler(message: types.Message):
     user_id = message.from_user.id
     user_name = message.from_user.first_name or "Анонім"
-    action = message.text
+    received_text = message.text
+    action = BUTTON_MAPPING[received_text]
 
-    logger.info(f"🔘 Кнопка '{action}' від {user_id} ({user_name})")
+    logger.info(f"🔘 Кнопка '{received_text}' (дія: {action}) від {user_id} ({user_name})")
 
     try:
         # Перевірка, чи є користувач адміністратором
         is_admin = await queue_manager.is_admin(user_id)
 
-        if action == "Переглянути історію" and not is_admin:
+        if action in ["Переглянути історію", "Видалити першого"] and not is_admin:
             await message.answer("Ця дія доступна лише для адміністраторів.", reply_markup=await get_main_keyboard(user_id))
             return
 
@@ -119,7 +145,7 @@ async def button_handler(message: types.Message):
 
         # Перевірка, чи вибрано університет (окрім адмінських дій)
         university_id = user_context.get(user_id)
-        if not university_id and action != "Переглянути історію":
+        if not university_id and action not in ["Переглянути історію"]:
             await message.answer("Спочатку виберіть університет за допомогою кнопки 'Вибрати університет'.", reply_markup=await get_main_keyboard(user_id))
             return
 
@@ -147,10 +173,16 @@ async def button_handler(message: types.Message):
         elif action == "Переглянути історію":
             response = await queue_manager.get_user_history(user_id)
 
+        elif action == "Видалити першого":
+            response, updated_users = await queue_manager.next_in_queue(university_id)
+            await queue_manager.save_queue()
+            if updated_users:
+                asyncio.create_task(queue_manager.remind_first(bot, user_id, university_id))
+
         await message.answer(response, reply_markup=await get_main_keyboard(user_id))
 
     except Exception as e:
-        logger.error(f"❌ Помилка обробки '{action}': {e}")
+        logger.error(f"❌ Помилка обробки '{action}' (кнопка: {received_text}): {e}")
         await message.answer("Сталася помилка. Спробуйте ще раз.", reply_markup=await get_main_keyboard(user_id))
 
 # Обробка контакту
@@ -195,6 +227,24 @@ async def next_command(message: types.Message):
     if updated_users:
         asyncio.create_task(queue_manager.remind_first(bot, user_id, university_id))
 
+# /remove_first
+@dp.message(Command("remove_first"))
+async def remove_first_command(message: types.Message):
+    user_id = message.from_user.id
+    if not await queue_manager.is_admin(user_id):
+        await message.answer("Ця команда доступна лише для адміністраторів.", reply_markup=await get_main_keyboard(user_id))
+        return
+    university_id = user_context.get(user_id)
+    if not university_id:
+        await message.answer("Спочатку виберіть університет за допомогою кнопки 'Вибрати університет'.", reply_markup=await get_main_keyboard(user_id))
+        return
+    response, updated_users = await queue_manager.next_in_queue(university_id)
+    await queue_manager.save_queue()
+    await message.answer(response, reply_markup=await get_main_keyboard(user_id))
+    # Нагадування першому в черзі
+    if updated_users:
+        asyncio.create_task(queue_manager.remind_first(bot, user_id, university_id))
+
 # /admin_history
 @dp.message(Command("admin_history"))
 async def admin_history_command(message: types.Message):
@@ -216,9 +266,7 @@ async def university_selection(callback: types.CallbackQuery):
     user_context[user_id] = university_id
 
     try:
-        # Оновлюємо текст повідомлення без зміни inline-клавіатури
         await callback.message.edit_text("Університет вибрано! Оберіть дію:")
-        # Надсилаємо нове повідомлення з основною клавіатурою
         await callback.message.answer("Оберіть дію:", reply_markup=await get_main_keyboard(user_id))
         await callback.answer()
     except Exception as e:
@@ -270,7 +318,7 @@ async def button_handler(callback: types.CallbackQuery):
         await callback.answer()
 
     except Exception as e:
-        logger.error(f"❌ callback finais {callback.data}: {e}")
+        logger.error(f"❌ callback failure {callback.data}: {e}")
         await callback.message.answer("Сталася помилка. Спробуйте ще раз.", reply_markup=await get_main_keyboard(user_id))
         await callback.answer()
 
