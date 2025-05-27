@@ -68,6 +68,16 @@ class QueueManager:
                     added_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS broadcast_messages (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    admin_id BIGINT NOT NULL,
+                    admin_name VARCHAR(255) NOT NULL,
+                    message_text TEXT NOT NULL,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (admin_id) REFERENCES admins(user_id) ON DELETE CASCADE
+                )
+            """)
             conn.commit()
             logger.info("База даних ініціалізована")
             await self.load_queue()
@@ -221,6 +231,46 @@ class QueueManager:
         except mysql.connector.Error as e:
             logger.error(f"Помилка отримання історії користувача: {e}")
             return "Помилка при отриманні історії."
+        finally:
+            if 'cursor' in locals(): cursor.close()
+            if 'conn' in locals(): conn.close()
+
+    async def broadcast_message(self, bot, admin_id: int, admin_name: str, message_text: str):
+        """Зберігає повідомлення в базу даних і надсилає його всім користувачам"""
+        try:
+            # Збереження повідомлення в базу даних
+            conn = mysql.connector.connect(**self.db_config)
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO broadcast_messages (admin_id, admin_name, message_text) VALUES (%s, %s, %s)",
+                (admin_id, admin_name, message_text)
+            )
+            conn.commit()
+            logger.info(f"Оголошення збережено від {admin_name} (ID: {admin_id})")
+
+            # Логування дії
+            await self.log_action(admin_id, admin_name, f"broadcast_message: {message_text[:50]}...")
+
+            # Отримання всіх користувачів
+            cursor.execute("SELECT user_id FROM users")
+            users = cursor.fetchall()
+            logger.info(f"Надсилання оголошення {len(users)} користувачам")
+
+            # Форматування повідомлення
+            broadcast_text = f"📢 Оголошення від адміністратора {admin_name}:\n{message_text}"
+
+            # Надсилання повідомлення кожному користувачу
+            for (user_id,) in users:
+                try:
+                    await bot.send_message(chat_id=user_id, text=broadcast_text)
+                    logger.info(f"Оголошення надіслано користувачу {user_id}")
+                except Exception as e:
+                    logger.error(f"Помилка надсилання оголошення користувачу {user_id}: {e}")
+                    continue
+
+        except mysql.connector.Error as e:
+            logger.error(f"Помилка збереження оголошення: {e}")
+            raise
         finally:
             if 'cursor' in locals(): cursor.close()
             if 'conn' in locals(): conn.close()

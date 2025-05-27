@@ -55,6 +55,16 @@ CREATE TABLE IF NOT EXISTS admins (
     added_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Create the broadcast_messages table
+CREATE TABLE IF NOT EXISTS broadcast_messages (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    admin_id BIGINT NOT NULL,
+    admin_name VARCHAR(255) NOT NULL,
+    message_text TEXT NOT NULL,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (admin_id) REFERENCES admins(user_id) ON DELETE CASCADE
+);
+
 -- Insert distinct Ukrainian universities
 INSERT INTO universities (name) VALUES
     ('Київський національний університет імені Тараса Шевченка'),
@@ -70,5 +80,5 @@ INSERT INTO universities (name) VALUES
 
 -- Insert a sample admin (replace with actual admin user_id and user_name)
 INSERT INTO admins (user_id, user_name) VALUES
-    (967484016, 'Олег');
-    (1885828317,'Максим');
+    (967484016, 'Олег'),
+    (1885828317, 'Максим');
