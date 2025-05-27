@@ -5,7 +5,9 @@ import mysql.connector
 import re
 
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from dotenv import load_dotenv
 from brain import QueueManager
@@ -31,6 +33,10 @@ dp = Dispatcher()
 queue_manager = QueueManager(db_config)
 user_context = {}  # {user_id: university_id}
 
+# Визначення станів для введення повідомлення
+class BroadcastStates(StatesGroup):
+    waiting_for_message = State()
+
 # Словник для зіставлення відображуваних кнопок із діями
 BUTTON_MAPPING = {
     "➡️ Почати ⬅️": "Почати",
@@ -40,7 +46,8 @@ BUTTON_MAPPING = {
     "🔍 Переглянути чергу 🔍": "Переглянути чергу",
     "🪪 Моя позиція 🪪": "Моя позиція",
     "📜 Переглянути історію 📜": "Переглянути історію",
-    "⏭️ Видалити першого ⏭️": "Видалити першого"
+    "⏭️ Видалити першого ⏭️": "Видалити першого",
+    "📢 Надіслати оголошення 📢": "Надіслати оголошення"
 }
 
 # Функція для очищення тексту від емодзі та пробілів
@@ -67,6 +74,7 @@ async def get_main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
     if is_admin:
         keyboard.append([KeyboardButton(text="📜 Переглянути історію 📜")])
         keyboard.append([KeyboardButton(text="⏭️ Видалити першого ⏭️")])
+        keyboard.append([KeyboardButton(text="📢 Надіслати оголошення 📢")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 # Клавіатура для вибору університету
@@ -119,7 +127,7 @@ async def handle_start_button(message: types.Message):
 
 # Обробка текстових команд від кнопок
 @dp.message(lambda message: message.text in BUTTON_MAPPING)
-async def button_handler(message: types.Message):
+async def button_handler(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     user_name = message.from_user.first_name or "Анонім"
     received_text = message.text
@@ -131,8 +139,13 @@ async def button_handler(message: types.Message):
         # Перевірка, чи є користувач адміністратором
         is_admin = await queue_manager.is_admin(user_id)
 
-        if action in ["Переглянути історію", "Видалити першого"] and not is_admin:
+        if action in ["Переглянути історію", "Видалити першого", "Надіслати оголошення"] and not is_admin:
             await message.answer("Ця дія доступна лише для адміністраторів.", reply_markup=await get_main_keyboard(user_id))
+            return
+
+        if action == "Надіслати оголошення":
+            await message.answer("Введіть текст оголошення для всіх користувачів:")
+            await state.set_state(BroadcastStates.waiting_for_message)
             return
 
         if action == "Вибрати університет":
@@ -145,7 +158,7 @@ async def button_handler(message: types.Message):
 
         # Перевірка, чи вибрано університет (окрім адмінських дій)
         university_id = user_context.get(user_id)
-        if not university_id and action not in ["Переглянути історію"]:
+        if not university_id and action not in ["Переглянути історію", "Надіслати оголошення"]:
             await message.answer("Спочатку виберіть університет за допомогою кнопки 'Вибрати університет'.", reply_markup=await get_main_keyboard(user_id))
             return
 
@@ -184,6 +197,30 @@ async def button_handler(message: types.Message):
     except Exception as e:
         logger.error(f"❌ Помилка обробки '{action}' (кнопка: {received_text}): {e}")
         await message.answer("Сталася помилка. Спробуйте ще раз.", reply_markup=await get_main_keyboard(user_id))
+
+# Обробка введення тексту оголошення
+@dp.message(StateFilter(BroadcastStates.waiting_for_message))
+async def process_broadcast_message(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    user_name = message.from_user.first_name or "Анонім"
+    if not await queue_manager.is_admin(user_id):
+        await message.answer("Ця дія доступна лише для адміністраторів.", reply_markup=await get_main_keyboard(user_id))
+        await state.clear()
+        return
+
+    message_text = message.text.strip()
+    if not message_text:
+        await message.answer("Текст оголошення не може бути порожнім. Спробуйте ще раз.")
+        return
+
+    try:
+        await queue_manager.broadcast_message(bot, user_id, user_name, message_text)
+        await message.answer("Оголошення успішно надіслано всім користувачам!", reply_markup=await get_main_keyboard(user_id))
+        await state.clear()
+    except Exception as e:
+        logger.error(f"Помилка надсилання оголошення від {user_id}: {e}")
+        await message.answer("Сталася помилка при надсиланні оголошення. Спробуйте ще раз.", reply_markup=await get_main_keyboard(user_id))
+        await state.clear()
 
 # Обробка контакту
 @dp.message(lambda message: message.contact is not None)
@@ -254,6 +291,16 @@ async def admin_history_command(message: types.Message):
         return
     history = await queue_manager.get_user_history(user_id)
     await message.answer(history, reply_markup=await get_main_keyboard(user_id))
+
+# /broadcast
+@dp.message(Command("broadcast"))
+async def broadcast_command(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    if not await queue_manager.is_admin(user_id):
+        await message.answer("Ця команда доступна лише для адміністраторів.", reply_markup=await get_main_keyboard(user_id))
+        return
+    await message.answer("Введіть текст оголошення для всіх користувачів:")
+    await state.set_state(BroadcastStates.waiting_for_message)
 
 # Обробка вибору університету
 @dp.callback_query(lambda c: c.data.startswith("uni_"))
