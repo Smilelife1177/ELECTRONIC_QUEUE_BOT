@@ -36,46 +36,39 @@ class QueueManager:
                 )
             """)
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS queue (
-                    user_id BIGINT NOT NULL,
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
                     user_name VARCHAR(255) NOT NULL,
-                    university_id INT NOT NULL,
-                    join_time DATETIME NOT NULL,
-                    PRIMARY KEY (user_id, university_id),
-                    FOREIGN KEY (university_id) REFERENCES universities(university_id) ON DELETE CASCADE
+                    phone_number VARCHAR(20) NOT NULL,
+                    is_admin BOOLEAN NOT NULL DEFAULT FALSE
                 )
             """)
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id BIGINT PRIMARY KEY,
-                    user_name VARCHAR(255),
-                    phone_number VARCHAR(20)
+                CREATE TABLE IF NOT EXISTS queue (
+                    user_id BIGINT NOT NULL,
+                    university_id INT NOT NULL,
+                    join_time DATETIME NOT NULL,
+                    PRIMARY KEY (user_id, university_id),
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                    FOREIGN KEY (university_id) REFERENCES universities(university_id) ON DELETE CASCADE
                 )
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS user_history (
                     id INT AUTO_INCREMENT PRIMARY KEY,
-                    user_id BIGINT,
-                    user_name VARCHAR(255),
-                    action VARCHAR(255),
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS admins (
-                    user_id BIGINT PRIMARY KEY,
-                    user_name VARCHAR(255),
-                    added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    user_id BIGINT NOT NULL,
+                    action VARCHAR(255) NOT NULL,
+                    timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
                 )
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS broadcast_messages (
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     admin_id BIGINT NOT NULL,
-                    admin_name VARCHAR(255) NOT NULL,
                     message_text TEXT NOT NULL,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (admin_id) REFERENCES admins(user_id) ON DELETE CASCADE
+                    timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (admin_id) REFERENCES users(user_id) ON DELETE CASCADE
                 )
             """)
             conn.commit()
@@ -93,9 +86,9 @@ class QueueManager:
         try:
             conn = mysql.connector.connect(**self.db_config)
             cursor = conn.cursor()
-            cursor.execute("SELECT user_id FROM admins WHERE user_id = %s", (user_id,))
+            cursor.execute("SELECT is_admin FROM users WHERE user_id = %s", (user_id,))
             result = cursor.fetchone()
-            return result is not None
+            return result is not None and result[0]
         except mysql.connector.Error as e:
             logger.error(f"Помилка перевірки статусу адміністратора: {e}")
             return False
@@ -127,7 +120,12 @@ class QueueManager:
         try:
             conn = mysql.connector.connect(**self.db_config)
             cursor = conn.cursor()
-            cursor.execute("SELECT user_id, user_name, university_id, join_time FROM queue ORDER BY join_time")
+            cursor.execute("""
+                SELECT q.user_id, u.user_name, q.university_id, q.join_time 
+                FROM queue q
+                JOIN users u ON q.user_id = u.user_id
+                ORDER BY q.join_time
+            """)
             for row in cursor.fetchall():
                 user_id, user_name, university_id, join_time = row
                 if university_id not in self.queues:
@@ -151,8 +149,8 @@ class QueueManager:
             for university_id, queue in self.queues.items():
                 for user_id in queue:
                     cursor.execute(
-                        "INSERT INTO queue (user_id, user_name, university_id, join_time) VALUES (%s, %s, %s, %s)",
-                        (user_id, self.user_names[(user_id, university_id)], university_id, self.join_times[(user_id, university_id)])
+                        "INSERT INTO queue (user_id, university_id, join_time) VALUES (%s, %s, %s)",
+                        (user_id, university_id, self.join_times[(user_id, university_id)])
                     )
             conn.commit()
             logger.info("Черги успішно збережені в базі даних")
@@ -168,9 +166,9 @@ class QueueManager:
             conn = mysql.connector.connect(**self.db_config)
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO users (user_id, user_name, phone_number) VALUES (%s, %s, %s) "
+                "INSERT INTO users (user_id, user_name, phone_number, is_admin) VALUES (%s, %s, %s, %s) "
                 "ON DUPLICATE KEY UPDATE user_name=%s, phone_number=%s",
-                (user_id, user_name, phone_number, user_name, phone_number)
+                (user_id, user_name, phone_number, False, user_name, phone_number)
             )
             conn.commit()
             logger.info(f"Збережено номер: {phone_number} для {user_name} (ID: {user_id})")
@@ -201,8 +199,8 @@ class QueueManager:
             conn = mysql.connector.connect(**self.db_config)
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO user_history (user_id, user_name, action) VALUES (%s, %s, %s)",
-                (user_id, user_name, action)
+                "INSERT INTO user_history (user_id, action) VALUES (%s, %s)",
+                (user_id, action)
             )
             conn.commit()
             logger.info(f"Дія записана: {action} для {user_name} (ID: {user_id})")
@@ -217,10 +215,13 @@ class QueueManager:
         try:
             conn = mysql.connector.connect(**self.db_config)
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT user_name, action, timestamp FROM user_history WHERE user_id = %s ORDER BY timestamp DESC",
-                (user_id,)
-            )
+            cursor.execute("""
+                SELECT u.user_name, h.action, h.timestamp 
+                FROM user_history h
+                JOIN users u ON h.user_id = u.user_id
+                WHERE h.user_id = %s 
+                ORDER BY h.timestamp DESC
+            """, (user_id,))
             history = cursor.fetchall()
             if not history:
                 return "Історія дій порожня."
@@ -242,8 +243,8 @@ class QueueManager:
             conn = mysql.connector.connect(**self.db_config)
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO broadcast_messages (admin_id, admin_name, message_text) VALUES (%s, %s, %s)",
-                (admin_id, admin_name, message_text)
+                "INSERT INTO broadcast_messages (admin_id, message_text) VALUES (%s, %s)",
+                (admin_id, message_text)
             )
             conn.commit()
             logger.info(f"Оголошення збережено від {admin_name} (ID: {admin_id})")
