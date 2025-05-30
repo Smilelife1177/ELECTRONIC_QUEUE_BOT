@@ -192,7 +192,7 @@ async def button_handler(message: types.Message, state: FSMContext):
             response = await queue_manager.get_user_history(user_id)
 
         elif action == "Видалити першого":
-            response, updated_users = await queue_manager.next_in_queue(university_id)
+            response, updated_users = await queue_manager.next_in_queue(university_id, bot)
             await queue_manager.save_queue()
             if updated_users:
                 asyncio.create_task(queue_manager.remind_first(bot, user_id, university_id))
@@ -289,7 +289,7 @@ async def next_command(message: types.Message):
     if not university_id:
         await message.answer("Спочатку виберіть університет за допомогою кнопки 'Вибрати університет'.", reply_markup=await get_main_keyboard(user_id))
         return
-    response, updated_users = await queue_manager.next_in_queue(university_id)
+    response, updated_users = await queue_manager.next_in_queue(university_id, bot)
     await queue_manager.save_queue()
     await message.answer(response, reply_markup=await get_main_keyboard(user_id))
     # Нагадування першому в черзі
@@ -307,7 +307,7 @@ async def remove_first_command(message: types.Message):
     if not university_id:
         await message.answer("Спочатку виберіть університет за допомогою кнопки 'Вибрати університет'.", reply_markup=await get_main_keyboard(user_id))
         return
-    response, updated_users = await queue_manager.next_in_queue(university_id)
+    response, updated_users = await queue_manager.next_in_queue(university_id, bot)
     await queue_manager.save_queue()
     await message.answer(response, reply_markup=await get_main_keyboard(user_id))
     # Нагадування першому в черзі

@@ -322,20 +322,39 @@ class QueueManager:
         logger.info(f"Запит на перегляд черги для університету {university_id}")
         return "\n".join(result)
 
-    async def next_in_queue(self, university_id: int) -> tuple[str, list[int]]:
-        """Викликає наступного користувача з черги університету"""
+    async def next_in_queue(self, university_id: int, bot) -> tuple[str, list[int]]:
+        """Викликає наступного користувача з черги університету та сповіщає всіх про нову позицію"""
         if university_id not in self.queues or not self.queues[university_id]:
             logger.info(f"Черга для університету {university_id} порожня при виклику наступного")
             return "Черга порожня.", []
+        # Видаляємо першого користувача
         next_user = self.queues[university_id].popleft()
         next_name = self.user_names.pop((next_user, university_id))
         self.join_times.pop((next_user, university_id))
+        # Перевіряємо, чи залишилися користувачі в черзі
         if not self.queues[university_id]:
             del self.queues[university_id]
+            logger.info(f"Черга для університету {university_id} порожня після видалення {next_name} (ID: {next_user})")
+            return "Черга порожня.", []
+        # Отримуємо ім'я наступного користувача (тепер першого в черзі)
+        new_first_user = self.queues[university_id][0]
+        new_first_name = self.user_names[(new_first_user, university_id)]
         updated_users = list(self.queues.get(university_id, deque()))
-        logger.info(f"Наступний користувач: {next_name} (ID: {next_user}) з університету {university_id}")
+        # Сповіщаємо всіх користувачів у черзі про їхні нові позиції
+        for index, user_id in enumerate(updated_users):
+            try:
+                position_message = await self.notify_position(user_id, university_id)
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=f"Черга зрушила! {position_message}"
+                )
+                logger.info(f"Сповіщення про нову позицію надіслано користувачу {user_id} у університеті {university_id}")
+            except Exception as e:
+                logger.error(f"Помилка надсилання сповіщення користувачу {user_id}: {e}")
+                continue
+        logger.info(f"Наступний користувач після видалення {next_name} (ID: {next_user}): {new_first_name} (ID: {new_first_user}) у університеті {university_id}")
         await self.log_action(next_user, next_name, f"next_in_queue_university_{university_id}")
-        return f"Наступний: {next_name}", updated_users
+        return f"Наступний: {new_first_name}", updated_users
 
     async def notify_position(self, user_id: int, university_id: int) -> str:
         """Повертає повідомлення про поточну позицію користувача в черзі університету"""
@@ -356,7 +375,7 @@ class QueueManager:
             first_user = self.queues[university_id][0]
             try:
                 await bot.send_message(
-                    chat_id=chat_id,
+                    chat_id=first_user,
                     text=f"{self.user_names[(first_user, university_id)]}, ви перший у черзі університету! Будь ласка, підготуйтеся."
                 )
                 logger.info(f"Нагадування надіслано першому користувачу (ID: {first_user}) у {university_id}")
