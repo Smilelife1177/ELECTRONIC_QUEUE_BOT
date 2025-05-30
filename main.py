@@ -33,8 +33,9 @@ dp = Dispatcher()
 queue_manager = QueueManager(db_config)
 user_context = {}  # {user_id: university_id}
 
-# Визначення станів для введення повідомлення
+# Визначення станів для введення повідомлення та вибору університету
 class BroadcastStates(StatesGroup):
+    waiting_for_university = State()
     waiting_for_message = State()
 
 # Словник для зіставлення відображуваних кнопок із діями
@@ -144,8 +145,12 @@ async def button_handler(message: types.Message, state: FSMContext):
             return
 
         if action == "Надіслати оголошення":
-            await message.answer("Введіть текст оголошення для всіх користувачів:")
-            await state.set_state(BroadcastStates.waiting_for_message)
+            universities = await queue_manager.get_universities()
+            if not universities:
+                await message.answer("Немає доступних університетів.", reply_markup=await get_main_keyboard(user_id))
+                return
+            await message.answer("Виберіть університет для оголошення:", reply_markup=get_universities_keyboard(universities))
+            await state.set_state(BroadcastStates.waiting_for_university)
             return
 
         if action == "Вибрати університет":
@@ -187,7 +192,7 @@ async def button_handler(message: types.Message, state: FSMContext):
             response = await queue_manager.get_user_history(user_id)
 
         elif action == "Видалити першого":
-            response, updated_users = await queue_manager.next_in_queue(university_id)
+            response, updated_users = await queue_manager.next_in_queue(university_id, bot)
             await queue_manager.save_queue()
             if updated_users:
                 asyncio.create_task(queue_manager.remind_first(bot, user_id, university_id))
@@ -197,6 +202,26 @@ async def button_handler(message: types.Message, state: FSMContext):
     except Exception as e:
         logger.error(f"❌ Помилка обробки '{action}' (кнопка: {received_text}): {e}")
         await message.answer("Сталася помилка. Спробуйте ще раз.", reply_markup=await get_main_keyboard(user_id))
+
+# Обробка вибору університету для оголошення
+@dp.callback_query(StateFilter(BroadcastStates.waiting_for_university), lambda c: c.data.startswith("uni_"))
+async def broadcast_university_selection(callback: types.CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    user_name = callback.from_user.first_name or "Анонім"
+    university_id = int(callback.data.split("_")[1])
+
+    logger.info(f"🔘 Вибір університету {university_id} для оголошення від {user_id} ({user_name})")
+    
+    try:
+        await state.update_data(university_id=university_id)
+        await callback.message.edit_text("Введіть текст оголошення для користувачів цього університету:")
+        await state.set_state(BroadcastStates.waiting_for_message)
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"❌ Помилка вибору університету для оголошення: {e}")
+        await callback.message.answer("Сталася помилка. Спробуйте ще раз.", reply_markup=await get_main_keyboard(user_id))
+        await state.clear()
+        await callback.answer()
 
 # Обробка введення тексту оголошення
 @dp.message(StateFilter(BroadcastStates.waiting_for_message))
@@ -214,8 +239,15 @@ async def process_broadcast_message(message: types.Message, state: FSMContext):
         return
 
     try:
-        await queue_manager.broadcast_message(bot, user_id, user_name, message_text)
-        await message.answer("Оголошення успішно надіслано всім користувачам!", reply_markup=await get_main_keyboard(user_id))
+        data = await state.get_data()
+        university_id = data.get('university_id')
+        if not university_id:
+            await message.answer("Не вибрано університет. Спробуйте ще раз.", reply_markup=await get_main_keyboard(user_id))
+            await state.clear()
+            return
+
+        await queue_manager.broadcast_message(bot, user_id, user_name, message_text, university_id)
+        await message.answer("Оголошення успішно надіслано користувачам університету!", reply_markup=await get_main_keyboard(user_id))
         await state.clear()
     except Exception as e:
         logger.error(f"Помилка надсилання оголошення від {user_id}: {e}")
@@ -257,7 +289,7 @@ async def next_command(message: types.Message):
     if not university_id:
         await message.answer("Спочатку виберіть університет за допомогою кнопки 'Вибрати університет'.", reply_markup=await get_main_keyboard(user_id))
         return
-    response, updated_users = await queue_manager.next_in_queue(university_id)
+    response, updated_users = await queue_manager.next_in_queue(university_id, bot)
     await queue_manager.save_queue()
     await message.answer(response, reply_markup=await get_main_keyboard(user_id))
     # Нагадування першому в черзі
@@ -275,7 +307,7 @@ async def remove_first_command(message: types.Message):
     if not university_id:
         await message.answer("Спочатку виберіть університет за допомогою кнопки 'Вибрати університет'.", reply_markup=await get_main_keyboard(user_id))
         return
-    response, updated_users = await queue_manager.next_in_queue(university_id)
+    response, updated_users = await queue_manager.next_in_queue(university_id, bot)
     await queue_manager.save_queue()
     await message.answer(response, reply_markup=await get_main_keyboard(user_id))
     # Нагадування першому в черзі
@@ -299,8 +331,12 @@ async def broadcast_command(message: types.Message, state: FSMContext):
     if not await queue_manager.is_admin(user_id):
         await message.answer("Ця команда доступна лише для адміністраторів.", reply_markup=await get_main_keyboard(user_id))
         return
-    await message.answer("Введіть текст оголошення для всіх користувачів:")
-    await state.set_state(BroadcastStates.waiting_for_message)
+    universities = await queue_manager.get_universities()
+    if not universities:
+        await message.answer("Немає доступних університетів.", reply_markup=await get_main_keyboard(user_id))
+        return
+    await message.answer("Виберіть університет для оголошення:", reply_markup=get_universities_keyboard(universities))
+    await state.set_state(BroadcastStates.waiting_for_university)
 
 # Обробка вибору університету
 @dp.callback_query(lambda c: c.data.startswith("uni_"))

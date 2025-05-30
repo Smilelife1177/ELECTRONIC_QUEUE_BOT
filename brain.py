@@ -36,46 +36,39 @@ class QueueManager:
                 )
             """)
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS queue (
-                    user_id BIGINT NOT NULL,
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
                     user_name VARCHAR(255) NOT NULL,
-                    university_id INT NOT NULL,
-                    join_time DATETIME NOT NULL,
-                    PRIMARY KEY (user_id, university_id),
-                    FOREIGN KEY (university_id) REFERENCES universities(university_id) ON DELETE CASCADE
+                    phone_number VARCHAR(20) NOT NULL,
+                    is_admin BOOLEAN NOT NULL DEFAULT FALSE
                 )
             """)
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id BIGINT PRIMARY KEY,
-                    user_name VARCHAR(255),
-                    phone_number VARCHAR(20)
+                CREATE TABLE IF NOT EXISTS queue (
+                    user_id BIGINT NOT NULL,
+                    university_id INT NOT NULL,
+                    join_time DATETIME NOT NULL,
+                    PRIMARY KEY (user_id, university_id),
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                    FOREIGN KEY (university_id) REFERENCES universities(university_id) ON DELETE CASCADE
                 )
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS user_history (
                     id INT AUTO_INCREMENT PRIMARY KEY,
-                    user_id BIGINT,
-                    user_name VARCHAR(255),
-                    action VARCHAR(255),
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS admins (
-                    user_id BIGINT PRIMARY KEY,
-                    user_name VARCHAR(255),
-                    added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    user_id BIGINT NOT NULL,
+                    action VARCHAR(255) NOT NULL,
+                    timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
                 )
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS broadcast_messages (
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     admin_id BIGINT NOT NULL,
-                    admin_name VARCHAR(255) NOT NULL,
                     message_text TEXT NOT NULL,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (admin_id) REFERENCES admins(user_id) ON DELETE CASCADE
+                    timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (admin_id) REFERENCES users(user_id) ON DELETE CASCADE
                 )
             """)
             conn.commit()
@@ -93,9 +86,9 @@ class QueueManager:
         try:
             conn = mysql.connector.connect(**self.db_config)
             cursor = conn.cursor()
-            cursor.execute("SELECT user_id FROM admins WHERE user_id = %s", (user_id,))
+            cursor.execute("SELECT is_admin FROM users WHERE user_id = %s", (user_id,))
             result = cursor.fetchone()
-            return result is not None
+            return result is not None and result[0]
         except mysql.connector.Error as e:
             logger.error(f"Помилка перевірки статусу адміністратора: {e}")
             return False
@@ -127,7 +120,12 @@ class QueueManager:
         try:
             conn = mysql.connector.connect(**self.db_config)
             cursor = conn.cursor()
-            cursor.execute("SELECT user_id, user_name, university_id, join_time FROM queue ORDER BY join_time")
+            cursor.execute("""
+                SELECT q.user_id, u.user_name, q.university_id, q.join_time 
+                FROM queue q
+                JOIN users u ON q.user_id = u.user_id
+                ORDER BY q.join_time
+            """)
             for row in cursor.fetchall():
                 user_id, user_name, university_id, join_time = row
                 if university_id not in self.queues:
@@ -151,8 +149,8 @@ class QueueManager:
             for university_id, queue in self.queues.items():
                 for user_id in queue:
                     cursor.execute(
-                        "INSERT INTO queue (user_id, user_name, university_id, join_time) VALUES (%s, %s, %s, %s)",
-                        (user_id, self.user_names[(user_id, university_id)], university_id, self.join_times[(user_id, university_id)])
+                        "INSERT INTO queue (user_id, university_id, join_time) VALUES (%s, %s, %s)",
+                        (user_id, university_id, self.join_times[(user_id, university_id)])
                     )
             conn.commit()
             logger.info("Черги успішно збережені в базі даних")
@@ -168,9 +166,9 @@ class QueueManager:
             conn = mysql.connector.connect(**self.db_config)
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO users (user_id, user_name, phone_number) VALUES (%s, %s, %s) "
+                "INSERT INTO users (user_id, user_name, phone_number, is_admin) VALUES (%s, %s, %s, %s) "
                 "ON DUPLICATE KEY UPDATE user_name=%s, phone_number=%s",
-                (user_id, user_name, phone_number, user_name, phone_number)
+                (user_id, user_name, phone_number, False, user_name, phone_number)
             )
             conn.commit()
             logger.info(f"Збережено номер: {phone_number} для {user_name} (ID: {user_id})")
@@ -201,8 +199,8 @@ class QueueManager:
             conn = mysql.connector.connect(**self.db_config)
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO user_history (user_id, user_name, action) VALUES (%s, %s, %s)",
-                (user_id, user_name, action)
+                "INSERT INTO user_history (user_id, action) VALUES (%s, %s)",
+                (user_id, action)
             )
             conn.commit()
             logger.info(f"Дія записана: {action} для {user_name} (ID: {user_id})")
@@ -217,10 +215,13 @@ class QueueManager:
         try:
             conn = mysql.connector.connect(**self.db_config)
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT user_name, action, timestamp FROM user_history WHERE user_id = %s ORDER BY timestamp DESC",
-                (user_id,)
-            )
+            cursor.execute("""
+                SELECT u.user_name, h.action, h.timestamp 
+                FROM user_history h
+                JOIN users u ON h.user_id = u.user_id
+                WHERE h.user_id = %s 
+                ORDER BY h.timestamp DESC
+            """, (user_id,))
             history = cursor.fetchall()
             if not history:
                 return "Історія дій порожня."
@@ -235,35 +236,34 @@ class QueueManager:
             if 'cursor' in locals(): cursor.close()
             if 'conn' in locals(): conn.close()
 
-    async def broadcast_message(self, bot, admin_id: int, admin_name: str, message_text: str):
-        """Зберігає повідомлення в базу даних і надсилає його всім користувачам"""
+    async def broadcast_message(self, bot, admin_id: int, admin_name: str, message_text: str, university_id: int):
+        """Зберігає повідомлення в базу даних і надсилає його користувачам у черзі вибраного університету"""
         try:
             # Збереження повідомлення в базу даних
             conn = mysql.connector.connect(**self.db_config)
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO broadcast_messages (admin_id, admin_name, message_text) VALUES (%s, %s, %s)",
-                (admin_id, admin_name, message_text)
+                "INSERT INTO broadcast_messages (admin_id, message_text) VALUES (%s, %s)",
+                (admin_id, message_text)
             )
             conn.commit()
             logger.info(f"Оголошення збережено від {admin_name} (ID: {admin_id})")
 
             # Логування дії
-            await self.log_action(admin_id, admin_name, f"broadcast_message: {message_text[:50]}...")
+            await self.log_action(admin_id, admin_name, f"broadcast_message_university_{university_id}: {message_text[:50]}...")
 
-            # Отримання всіх користувачів
-            cursor.execute("SELECT user_id FROM users")
-            users = cursor.fetchall()
-            logger.info(f"Надсилання оголошення {len(users)} користувачам")
+            # Отримання користувачів у черзі вибраного університету
+            users = list(self.queues.get(university_id, deque()))
+            logger.info(f"Надсилання оголошення {len(users)} користувачам університету {university_id}")
 
             # Форматування повідомлення
             broadcast_text = f"📢 Оголошення від адміністратора {admin_name}:\n{message_text}"
 
-            # Надсилання повідомлення кожному користувачу
-            for (user_id,) in users:
+            # Надсилання повідомлення кожному користувачу в черзі
+            for user_id in users:
                 try:
                     await bot.send_message(chat_id=user_id, text=broadcast_text)
-                    logger.info(f"Оголошення надіслано користувачу {user_id}")
+                    logger.info(f"Оголошення надіслано користувачу {user_id} у університеті {university_id}")
                 except Exception as e:
                     logger.error(f"Помилка надсилання оголошення користувачу {user_id}: {e}")
                     continue
@@ -322,20 +322,39 @@ class QueueManager:
         logger.info(f"Запит на перегляд черги для університету {university_id}")
         return "\n".join(result)
 
-    async def next_in_queue(self, university_id: int) -> tuple[str, list[int]]:
-        """Викликає наступного користувача з черги університету"""
+    async def next_in_queue(self, university_id: int, bot) -> tuple[str, list[int]]:
+        """Викликає наступного користувача з черги університету та сповіщає всіх про нову позицію"""
         if university_id not in self.queues or not self.queues[university_id]:
             logger.info(f"Черга для університету {university_id} порожня при виклику наступного")
             return "Черга порожня.", []
+        # Видаляємо першого користувача
         next_user = self.queues[university_id].popleft()
         next_name = self.user_names.pop((next_user, university_id))
         self.join_times.pop((next_user, university_id))
+        # Перевіряємо, чи залишилися користувачі в черзі
         if not self.queues[university_id]:
             del self.queues[university_id]
+            logger.info(f"Черга для університету {university_id} порожня після видалення {next_name} (ID: {next_user})")
+            return "Черга порожня.", []
+        # Отримуємо ім'я наступного користувача (тепер першого в черзі)
+        new_first_user = self.queues[university_id][0]
+        new_first_name = self.user_names[(new_first_user, university_id)]
         updated_users = list(self.queues.get(university_id, deque()))
-        logger.info(f"Наступний користувач: {next_name} (ID: {next_user}) з університету {university_id}")
+        # Сповіщаємо всіх користувачів у черзі про їхні нові позиції
+        for index, user_id in enumerate(updated_users):
+            try:
+                position_message = await self.notify_position(user_id, university_id)
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=f"Черга зрушила! {position_message}"
+                )
+                logger.info(f"Сповіщення про нову позицію надіслано користувачу {user_id} у університеті {university_id}")
+            except Exception as e:
+                logger.error(f"Помилка надсилання сповіщення користувачу {user_id}: {e}")
+                continue
+        logger.info(f"Наступний користувач після видалення {next_name} (ID: {next_user}): {new_first_name} (ID: {new_first_user}) у університеті {university_id}")
         await self.log_action(next_user, next_name, f"next_in_queue_university_{university_id}")
-        return f"Наступний: {next_name}", updated_users
+        return f"Наступний: {new_first_name}", updated_users
 
     async def notify_position(self, user_id: int, university_id: int) -> str:
         """Повертає повідомлення про поточну позицію користувача в черзі університету"""
@@ -356,22 +375,9 @@ class QueueManager:
             first_user = self.queues[university_id][0]
             try:
                 await bot.send_message(
-                    chat_id=chat_id,
+                    chat_id=first_user,
                     text=f"{self.user_names[(first_user, university_id)]}, ви перший у черзі університету! Будь ласка, підготуйтеся."
                 )
                 logger.info(f"Нагадування надіслано першому користувачу (ID: {first_user}) у {university_id}")
             except Exception as e:
                 logger.error(f"Помилка надсилання нагадування для університету {university_id}: {e}")
-
-    def get_stats(self, university_id: int) -> str:
-        """Повертає статистику черги для університету"""
-        if university_id not in self.queues or not self.queues[university_id]:
-            logger.info(f"Черга для університету {university_id} порожня, статистика недоступна")
-            return "Черга порожня, немає даних для статистики."
-        total_users = len(self.queues[university_id])
-        avg_wait = sum((datetime.now() - self.join_times[(uid, university_id)]).total_seconds() / 60 
-                       for uid in self.queues[university_id]) / total_users if total_users else 0
-        logger.info(f"Запит статистики для університету {university_id}: {total_users} користувачів, середній час {avg_wait:.1f} хвилин")
-        return (f"📊 Статистика черги:\n"
-                f"Кількість учасників: {total_users}\n"
-                f"Середній час очікування: {avg_wait:.1f} хвилин")

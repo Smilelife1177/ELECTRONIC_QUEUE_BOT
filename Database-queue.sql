@@ -14,7 +14,7 @@ FLUSH PRIVILEGES;
 CREATE DATABASE IF NOT EXISTS telegram_queue CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE telegram_queue;
 
--- Drop and recreate the universities table with a UNIQUE constraint
+-- Create the universities table
 DROP TABLE IF EXISTS universities;
 CREATE TABLE universities (
     university_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -22,47 +22,44 @@ CREATE TABLE universities (
     UNIQUE (name)
 );
 
--- Create the queue table
-CREATE TABLE IF NOT EXISTS queue (
-    user_id BIGINT NOT NULL,
+-- Create the users table with is_admin flag
+DROP TABLE IF EXISTS users;
+CREATE TABLE users (
+    user_id BIGINT PRIMARY KEY,
     user_name VARCHAR(255) NOT NULL,
+    phone_number VARCHAR(20) NOT NULL,
+    is_admin BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+-- Create the queue table (removed user_name)
+DROP TABLE IF EXISTS queue;
+CREATE TABLE queue (
+    user_id BIGINT NOT NULL,
     university_id INT NOT NULL,
     join_time DATETIME NOT NULL,
     PRIMARY KEY (user_id, university_id),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
     FOREIGN KEY (university_id) REFERENCES universities(university_id) ON DELETE CASCADE
 );
 
--- Create the users table
-CREATE TABLE IF NOT EXISTS users (
-    user_id BIGINT PRIMARY KEY,
-    user_name VARCHAR(255),
-    phone_number VARCHAR(20)
-);
-
--- Create the user_history table
-CREATE TABLE IF NOT EXISTS user_history (
+-- Create the user_history table (removed user_name)
+DROP TABLE IF EXISTS user_history;
+CREATE TABLE user_history (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    user_id BIGINT,
-    user_name VARCHAR(255),
-    action VARCHAR(255),
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    user_id BIGINT NOT NULL,
+    action VARCHAR(255) NOT NULL,
+    timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
--- Create the admins table
-CREATE TABLE IF NOT EXISTS admins (
-    user_id BIGINT PRIMARY KEY,
-    user_name VARCHAR(255),
-    added_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- Create the broadcast_messages table
-CREATE TABLE IF NOT EXISTS broadcast_messages (
+-- Create the broadcast_messages table (removed admin_name)
+DROP TABLE IF EXISTS broadcast_messages;
+CREATE TABLE broadcast_messages (
     id INT AUTO_INCREMENT PRIMARY KEY,
     admin_id BIGINT NOT NULL,
-    admin_name VARCHAR(255) NOT NULL,
     message_text TEXT NOT NULL,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (admin_id) REFERENCES admins(user_id) ON DELETE CASCADE
+    timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (admin_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
 -- Insert distinct Ukrainian universities
@@ -78,7 +75,7 @@ INSERT INTO universities (name) VALUES
     ('Київський національний економічний університет імені Вадима Гетьмана'),
     ('Чернівецький національний університет імені Юрія Федьковича');
 
--- Insert a sample admin (replace with actual admin user_id and user_name)
-INSERT INTO admins (user_id, user_name) VALUES
-    (967484016, 'Олег'),
-    (1885828317, 'Максим');
+-- Insert sample users with is_admin flag
+INSERT INTO users (user_id, user_name, phone_number, is_admin) VALUES
+    (967484016, 'Олег', '+380123456789', TRUE),
+    (1885828317, 'Максим', '+380987654321', TRUE);
